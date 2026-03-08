@@ -5,6 +5,8 @@
 #include <thread>
 #include <queue>
 #include <mutex>
+#include <string>
+#include <sstream>
 
 enum gs_usb_request_type {
     GS_USB_BREQ_HOST_FORMAT = 0,
@@ -35,6 +37,34 @@ struct CANFrame{
     bool is_brs() const { return flags & GS_CAN_FLAG_BRS; }
 };
 
+struct USBDeviceInfo{
+    uint16_t vid;
+    uint16_t pid;
+    uint8_t bus;
+    uint8_t addr;
+    std::string manufacturer;
+    std::string product;
+    std::string serial;
+    bool is_candlelight;
+
+    std::string to_string() const {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "VID:0x%04X PID:0x%04X Bus:%d Addr:%d - %s %s (SN:%s)",
+                vid, pid, bus, addr, 
+                manufacturer.c_str(), product.c_str(), serial.c_str());
+        return std::string(buf);
+    }
+};
+
+struct BitTimingConfig{
+    uint32_t prop_seg;
+    uint32_t phase_seg1;
+    uint32_t phase_seg2;
+    uint32_t sjw;
+    uint32_t brp;
+};
+
+
 class GsUsb{
 public:
     GsUsb(uint16_t vendor_id, uint16_t product_id);
@@ -44,12 +74,17 @@ public:
     void Start(bool use_fd = false);
     void Stop();
 
-    bool SendFDFrame(uint32_t can_id, const std::vector<uint8_t>& data, bool use_brs = false);
+    bool SendFrame(uint32_t can_id, const std::vector<uint8_t>& data, bool use_fd = false, bool use_brs = false);
     std::vector<CANFrame> GetReceivedFrames(size_t max_count = 100);
 
     uint64_t GetRxCount() const { return rx_count.load(); };
     uint64_t GetTxCount() const { return tx_count.load(); };
     bool IsRxThreadRunning() const { return rx_thread_running.load(); }
+
+    static std::vector<USBDeviceInfo> ScanDevices();
+    static GsUsb* OpenByBusAddr(uint8_t bus, uint8_t address);
+    static BitTimingConfig CalculateBitTiming(uint32_t bitrate, uint32_t clock_freq = 40000000);
+    void SetupCustomBitTiming(const BitTimingConfig& nominal, const BitTimingConfig& data);
 
 private:
     libusb_context* ctx = nullptr;
@@ -74,5 +109,6 @@ private:
     void DrainRxBuffer();
 
     static uint8_t LenToDlcCode(uint16_t len);
+    static uint8_t DlcCodeToLen(uint8_t dlc_code);
     static double GetTimestamp();
 };

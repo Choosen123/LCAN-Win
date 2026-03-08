@@ -17,5 +17,6 @@ set(PYBIND11_FINDPYTHON ON)
 find_package(Python 3.14 COMPONENTS Interpreter Development REQUIRED)
 find_package(pybind11 REQUIRED)
 
-pybind11_add_module(gs_usb_module binding.cpp)
-target_link_libraries(gs_usb_module PRIVATE gs_usb_lib Python::Module)
+pybind11_add_module(gs_usb binding.cpp)
+target_link_libraries(gs_usb PRIVATE gs_usb_lib Python::Module)
+target_include_directories(gs_usb PRIVATE C:/msys64/ucrt64/include)

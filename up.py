@@ -1,14 +1,31 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# filepath: d:\Code\pcan\up.py
+
 import sys
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLineEdit, QLabel, 
                              QTableWidget, QTableWidgetItem, QComboBox, 
                              QCheckBox, QGroupBox, QMessageBox, QHeaderView,
-                             QSpinBox, QFileDialog, QSplitter, QTabWidget)
+                             QSpinBox, QFileDialog, QSplitter, QTabWidget,
+                             QDialog, QDialogButtonBox, QRadioButton)
 from PyQt6.QtCore import QTimer, Qt, QDateTime
 from PyQt6.QtGui import QFont, QColor, QAction
-from my_gs_usb import GsUsbFDCAN
+
+# ✅ 尝试加载 C++ 原生模块
+try:
+    import gs_usb
+    print("[INFO] ✓ 使用 C++ 原生模块（高性能）")
+    USE_NATIVE = True
+except ImportError as e:
+    print(f"[WARNING] 无法加载 C++ 模块: {e}")
+    print("[INFO] 回退到 Python 实现")
+    from my_gs_usb import GsUsbFDCAN
+    USE_NATIVE = False
+
 import time
 from collections import defaultdict
+
 
 class MessageItem:
     """消息项数据结构"""
@@ -23,16 +40,332 @@ class MessageItem:
         self.timer = None
         self.tx_count = 0
 
+
 class CANStatistics:
     """CAN 统计信息"""
     def __init__(self, can_id):
         self.can_id = can_id
         self.rx_count = 0
         self.tx_count = 0
-        self.last_data = b''
-        self.last_time = None
-        self.cycle_time_ms = 0
-        self.last_rx_time = None
+        self.last_time = 0
+        self.last_data = bytes()
+        self.periods = []
+        self.last_rx_time = 0
+
+
+class DeviceScanDialog(QDialog):
+    """设备扫描对话框"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.selected_device = None
+        self.selected_config = None
+        self.initUI()
+    
+    def initUI(self):
+        self.setWindowTitle("扫描并配置 CAN 设备")
+        self.setMinimumWidth(800)
+        self.setMinimumHeight(500)
+        
+        layout = QVBoxLayout(self)
+        
+        # === 1. 设备列表 ===
+        device_group = QGroupBox("📡 可用设备")
+        device_layout = QVBoxLayout()
+        
+        # 工具栏
+        toolbar = QHBoxLayout()
+        self.btn_scan = QPushButton("🔍 扫描设备")
+        self.btn_scan.clicked.connect(self.scan_devices)
+        self.btn_scan.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-weight: bold; padding: 8px; }")
+        
+        self.label_device_count = QLabel("找到 0 个设备")
+        toolbar.addWidget(self.btn_scan)
+        toolbar.addWidget(self.label_device_count)
+        toolbar.addStretch()
+        
+        # 设备表格
+        self.device_table = QTableWidget(0, 7)
+        self.device_table.setHorizontalHeaderLabels([
+            "✓", "VID", "PID", "总线", "地址", "产品名称", "序列号"
+        ])
+        self.device_table.setColumnWidth(0, 40)
+        self.device_table.setColumnWidth(1, 80)
+        self.device_table.setColumnWidth(2, 80)
+        self.device_table.setColumnWidth(3, 60)
+        self.device_table.setColumnWidth(4, 60)
+        self.device_table.setColumnWidth(5, 250)
+        self.device_table.horizontalHeader().setStretchLastSection(True)
+        self.device_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.device_table.itemSelectionChanged.connect(self.on_device_selected)
+        
+        device_layout.addLayout(toolbar)
+        device_layout.addWidget(self.device_table)
+        device_group.setLayout(device_layout)
+        
+        # === 2. 配置区 ===
+        config_group = QGroupBox("⚙️ CAN 配置")
+        config_layout = QVBoxLayout()
+        
+        # CAN 模式选择
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("CAN 模式:"))
+        
+        self.radio_classic = QRadioButton("经典 CAN")
+        self.radio_fd = QRadioButton("CAN FD")
+        self.radio_fd.setChecked(True)
+        
+        self.check_brs = QCheckBox("使能 BRS (位速率切换)")
+        self.check_brs.setChecked(True)
+        self.check_brs.setEnabled(True)
+        
+        self.radio_classic.toggled.connect(self.on_mode_changed)
+        
+        mode_row.addWidget(self.radio_classic)
+        mode_row.addWidget(self.radio_fd)
+        mode_row.addWidget(self.check_brs)
+        mode_row.addStretch()
+        
+        # 仲裁段波特率
+        nominal_row = QHBoxLayout()
+        nominal_row.addWidget(QLabel("仲裁段波特率:"))
+        
+        self.combo_nominal = QComboBox()
+        self.combo_nominal.addItems([
+            "125 kbps",
+            "250 kbps",
+            "500 kbps",
+            "1000 kbps (1 Mbps)"
+        ])
+        self.combo_nominal.setCurrentIndex(2)  # 默认 500kbps
+        self.combo_nominal.setMinimumWidth(150)
+        
+        nominal_row.addWidget(self.combo_nominal)
+        nominal_row.addStretch()
+        
+        # 数据段波特率
+        data_row = QHBoxLayout()
+        self.label_data = QLabel("数据段波特率:")
+        data_row.addWidget(self.label_data)
+        
+        self.combo_data = QComboBox()
+        self.combo_data.addItems([
+            "500 kbps",
+            "1000 kbps (1 Mbps)",
+            "2000 kbps (2 Mbps)",
+            "5000 kbps (5 Mbps)"
+        ])
+        self.combo_data.setCurrentIndex(2)  # 默认 2Mbps
+        self.combo_data.setMinimumWidth(150)
+        
+        data_row.addWidget(self.combo_data)
+        data_row.addStretch()
+        
+        # 预览
+        preview_row = QHBoxLayout()
+        self.label_preview = QLabel()
+        self.label_preview.setStyleSheet("QLabel { color: #666; font-style: italic; }")
+        self.update_preview()
+        preview_row.addWidget(self.label_preview)
+        preview_row.addStretch()
+        
+        config_layout.addLayout(mode_row)
+        config_layout.addLayout(nominal_row)
+        config_layout.addLayout(data_row)
+        config_layout.addLayout(preview_row)
+        config_group.setLayout(config_layout)
+        
+        # === 3. 按钮 ===
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        
+        self.btn_ok = button_box.button(QDialogButtonBox.StandardButton.Ok)
+        self.btn_ok.setText("连接设备")
+        self.btn_ok.setEnabled(False)
+        
+        # 组装布局
+        layout.addWidget(device_group)
+        layout.addWidget(config_group)
+        layout.addWidget(button_box)
+        
+        # 连接信号
+        self.combo_nominal.currentIndexChanged.connect(self.update_preview)
+        self.combo_data.currentIndexChanged.connect(self.update_preview)
+        self.radio_fd.toggled.connect(self.update_preview)
+        self.check_brs.stateChanged.connect(self.update_preview)
+        
+        # 自动扫描
+        QTimer.singleShot(100, self.scan_devices)
+    
+    def scan_devices(self):
+        """扫描设备"""
+        self.device_table.setRowCount(0)
+        self.btn_scan.setEnabled(False)
+        self.btn_scan.setText("扫描中...")
+        QApplication.processEvents()
+        
+        try:
+            if USE_NATIVE:
+                devices = gs_usb.scan_devices()
+            else:
+                # Python 实现没有扫描功能，显示默认设备
+                devices = []
+                QMessageBox.information(
+                    self, "提示", 
+                    "Python 实现不支持设备扫描。\n将使用默认 VID:0x1d50 PID:0x606f"
+                )
+                
+                # 创建一个虚拟设备信息
+                class DummyDevice:
+                    def __init__(self):
+                        self.vid = 0x1d50
+                        self.pid = 0x606f
+                        self.bus = 0
+                        self.addr = 0
+                        self.manufacturer = "Unknown"
+                        self.product = "Candlelight (Manual)"
+                        self.serial = "N/A"
+                        self.is_candlelight = True
+                
+                devices = [DummyDevice()]
+            
+            # 只显示 Candlelight 设备
+            candlelight_devices = [d for d in devices if d.is_candlelight]
+            
+            for dev in candlelight_devices:
+                self.add_device_row(dev)
+            
+            self.label_device_count.setText(f"找到 {len(candlelight_devices)} 个 Candlelight 设备")
+            
+            if len(candlelight_devices) == 0:
+                QMessageBox.warning(
+                    self, "未找到设备",
+                    "没有找到 Candlelight 设备。\n\n请检查:\n"
+                    "1. 设备是否连接\n"
+                    "2. 驱动是否安装 (Windows 需要 WinUSB)\n"
+                    "3. 设备权限是否正确"
+                )
+            
+        except Exception as e:
+            QMessageBox.critical(self, "扫描失败", f"设备扫描失败:\n{str(e)}")
+        
+        finally:
+            self.btn_scan.setEnabled(True)
+            self.btn_scan.setText("🔍 扫描设备")
+    
+    def add_device_row(self, dev):
+        """添加设备行"""
+        row = self.device_table.rowCount()
+        self.device_table.insertRow(row)
+        
+        # 复选框（自动选中第一个）
+        chk = QCheckBox()
+        if row == 0:
+            chk.setChecked(True)
+        chk_widget = QWidget()
+        chk_layout = QHBoxLayout(chk_widget)
+        chk_layout.addWidget(chk)
+        chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chk_layout.setContentsMargins(0, 0, 0, 0)
+        self.device_table.setCellWidget(row, 0, chk_widget)
+        
+        # VID
+        vid_item = QTableWidgetItem(f"0x{dev.vid:04X}")
+        vid_item.setData(Qt.ItemDataRole.UserRole, dev)
+        self.device_table.setItem(row, 1, vid_item)
+        
+        # PID
+        self.device_table.setItem(row, 2, QTableWidgetItem(f"0x{dev.pid:04X}"))
+        
+        # Bus
+        self.device_table.setItem(row, 3, QTableWidgetItem(str(dev.bus)))
+        
+        # Addr
+        self.device_table.setItem(row, 4, QTableWidgetItem(str(dev.addr)))
+        
+        # Product
+        product_item = QTableWidgetItem(dev.product or "Unknown")
+        product_item.setFont(QFont("", 9, QFont.Weight.Bold))
+        self.device_table.setItem(row, 5, product_item)
+        
+        # Serial
+        self.device_table.setItem(row, 6, QTableWidgetItem(dev.serial or "N/A"))
+    
+    def on_device_selected(self):
+        """设备选择变化"""
+        selected_rows = self.device_table.selectionModel().selectedRows()
+        self.btn_ok.setEnabled(len(selected_rows) > 0)
+    
+    def on_mode_changed(self, checked):
+        """CAN 模式变化"""
+        is_classic = self.radio_classic.isChecked()
+        
+        # 经典 CAN 禁用数据段配置
+        self.label_data.setEnabled(not is_classic)
+        self.combo_data.setEnabled(not is_classic)
+        self.check_brs.setEnabled(not is_classic)
+        
+        if is_classic:
+            self.check_brs.setChecked(False)
+        
+        self.update_preview()
+    
+    def update_preview(self):
+        """更新配置预览"""
+        is_fd = self.radio_fd.isChecked()
+        use_brs = self.check_brs.isChecked()
+        
+        nominal_text = self.combo_nominal.currentText()
+        data_text = self.combo_data.currentText()
+        
+        if is_fd:
+            mode_str = "CAN FD"
+            if use_brs:
+                mode_str += " (BRS)"
+            preview = f"💡 {mode_str} | 仲裁段: {nominal_text} | 数据段: {data_text}"
+        else:
+            preview = f"💡 经典 CAN | 波特率: {nominal_text}"
+        
+        self.label_preview.setText(preview)
+    
+    def accept(self):
+        """确认"""
+        # 获取选中的设备
+        for row in range(self.device_table.rowCount()):
+            chk_widget = self.device_table.cellWidget(row, 0)
+            chk = chk_widget.findChild(QCheckBox)
+            if chk and chk.isChecked():
+                self.selected_device = self.device_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+                break
+        
+        if not self.selected_device:
+            QMessageBox.warning(self, "警告", "请选择一个设备")
+            return
+        
+        # 获取配置
+        self.selected_config = {
+            'use_fd': self.radio_fd.isChecked(),
+            'use_brs': self.check_brs.isChecked(),
+            'nominal_bitrate': self.get_bitrate_value(self.combo_nominal.currentText()),
+            'data_bitrate': self.get_bitrate_value(self.combo_data.currentText())
+        }
+        
+        super().accept()
+    
+    def get_bitrate_value(self, text):
+        """从文本获取波特率值"""
+        value_map = {
+            "125 kbps": 125000,
+            "250 kbps": 250000,
+            "500 kbps": 500000,
+            "1000 kbps (1 Mbps)": 1000000,
+            "2000 kbps (2 Mbps)": 2000000,
+            "5000 kbps (5 Mbps)": 5000000
+        }
+        return value_map.get(text, 500000)
+
 
 class PCANViewDual(QMainWindow):
     def __init__(self):
@@ -41,18 +374,17 @@ class PCANViewDual(QMainWindow):
         self.is_connected = False
         self.is_paused = False
         self.message_list = []
-        self.statistics = {}  # {can_id: CANStatistics}
-        self.scroll_data = []  # 滚动视图数据
+        self.statistics = {}
+        self.scroll_data = []
+        self.current_config = None
         self.initUI()
-        
+    
     def initUI(self):
-        self.setWindowTitle("PCAN-View Pro - 双视图模式 v2.1")
+        self.setWindowTitle("PCAN-View Pro - 增强版 v3.0")
         self.setGeometry(100, 100, 1600, 900)
         
-        # 创建菜单栏
         self.create_menu()
         
-        # 主布局
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -61,14 +393,12 @@ class PCANViewDual(QMainWindow):
         conn_group = self.create_connection_group()
         main_layout.addWidget(conn_group)
         
-        # === 2. 分割器：左边消息管理，右边接收视图 ===
+        # === 2. 分割器 ===
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # 左侧：发送消息管理
         msg_panel = self.create_message_panel()
         splitter.addWidget(msg_panel)
         
-        # 右侧：双视图接收面板
         rx_panel = self.create_dual_view_panel()
         splitter.addWidget(rx_panel)
         
@@ -77,22 +407,19 @@ class PCANViewDual(QMainWindow):
         
         main_layout.addWidget(splitter)
         
-        # === 3. 状态栏 ===
         self.create_statusbar()
         
-        # 接收定时器
+        # 定时器
         self.rx_timer = QTimer()
         self.rx_timer.timeout.connect(self.receive_data)
         
-        # 统计视图更新定时器
         self.stats_timer = QTimer()
         self.stats_timer.timeout.connect(self.update_statistics_view)
-        
+    
     def create_menu(self):
         """创建菜单栏"""
         menubar = self.menuBar()
         
-        # 文件菜单
         file_menu = menubar.addMenu("文件(&F)")
         
         save_msg_action = QAction("保存消息配置(&M)", self)
@@ -121,46 +448,18 @@ class PCANViewDual(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
-        # 视图菜单
-        view_menu = menubar.addMenu("视图(&V)")
-        
-        clear_scroll_action = QAction("清空滚动视图(&C)", self)
-        clear_scroll_action.triggered.connect(self.clear_scroll_view)
-        view_menu.addAction(clear_scroll_action)
-        
-        clear_stats_action = QAction("重置统计视图(&R)", self)
-        clear_stats_action.triggered.connect(self.clear_statistics_view)
-        view_menu.addAction(clear_stats_action)
-        
-        # 工具菜单
-        tool_menu = menubar.addMenu("工具(&T)")
-        
-        stop_all_action = QAction("停止所有发送(&S)", self)
-        stop_all_action.triggered.connect(self.stop_all_messages)
-        tool_menu.addAction(stop_all_action)
-        
-        # 帮助菜单
         help_menu = menubar.addMenu("帮助(&H)")
-        
         about_action = QAction("关于(&A)", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
-        
+    
     def create_connection_group(self):
         """创建连接控制组"""
         conn_group = QGroupBox("设备连接")
         conn_layout = QHBoxLayout()
         
-        self.label_vid = QLabel("VID:")
-        self.edit_vid = QLineEdit("0x1d50")
-        self.edit_vid.setMaximumWidth(80)
-        
-        self.label_pid = QLabel("PID:")
-        self.edit_pid = QLineEdit("0x606f")
-        self.edit_pid.setMaximumWidth(80)
-        
-        self.btn_connect = QPushButton("🔌 连接")
-        self.btn_connect.clicked.connect(self.connect_device)
+        self.btn_connect = QPushButton("🔌 扫描并连接")
+        self.btn_connect.clicked.connect(self.connect_device_with_scan)
         self.btn_connect.setStyleSheet("QPushButton { font-weight: bold; padding: 5px 15px; }")
         
         self.btn_disconnect = QPushButton("⏹ 断开")
@@ -171,13 +470,13 @@ class PCANViewDual(QMainWindow):
         self.label_status = QLabel("● 未连接")
         self.label_status.setStyleSheet("color: red; font-weight: bold; font-size: 12px;")
         
-        conn_layout.addWidget(self.label_vid)
-        conn_layout.addWidget(self.edit_vid)
-        conn_layout.addWidget(self.label_pid)
-        conn_layout.addWidget(self.edit_pid)
+        self.label_device_info = QLabel("")
+        self.label_device_info.setStyleSheet("color: #666; font-size: 10px;")
+        
         conn_layout.addWidget(self.btn_connect)
         conn_layout.addWidget(self.btn_disconnect)
         conn_layout.addWidget(self.label_status)
+        conn_layout.addWidget(self.label_device_info)
         conn_layout.addStretch()
         
         conn_group.setLayout(conn_layout)
@@ -188,17 +487,14 @@ class PCANViewDual(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         
-        # === 消息编辑区 ===
         edit_group = QGroupBox("新建/编辑消息")
         edit_layout = QVBoxLayout()
         
-        # 名称
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("名称:"))
         self.edit_msg_name = QLineEdit("Message 1")
         row1.addWidget(self.edit_msg_name)
         
-        # CAN ID
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("CAN ID:"))
         self.edit_msg_id = QLineEdit("0x123")
@@ -206,204 +502,157 @@ class PCANViewDual(QMainWindow):
         row2.addWidget(self.edit_msg_id)
         row2.addStretch()
         
-        # 数据
         row3 = QHBoxLayout()
         row3.addWidget(QLabel("数据:"))
         self.edit_msg_data = QLineEdit("11 22 33 44 55 66 77 88")
         row3.addWidget(self.edit_msg_data)
         
-        # 选项
         row4 = QHBoxLayout()
-        self.check_msg_fd = QCheckBox("FD")
+        row4.addWidget(QLabel("周期(ms):"))
+        self.spin_msg_period = QSpinBox()
+        self.spin_msg_period.setRange(10, 10000)
+        self.spin_msg_period.setValue(100)
+        self.spin_msg_period.setMaximumWidth(100)
+        row4.addWidget(self.spin_msg_period)
+        
+        self.check_msg_fd = QCheckBox("CAN FD")
         self.check_msg_fd.setChecked(True)
         self.check_msg_brs = QCheckBox("BRS")
         self.check_msg_brs.setChecked(True)
-        
-        row4.addWidget(QLabel("周期(ms):"))
-        self.spin_msg_period = QSpinBox()
-        self.spin_msg_period.setRange(1, 10000)
-        self.spin_msg_period.setValue(100)
-        self.spin_msg_period.setMaximumWidth(80)
-        
-        row4.addWidget(self.spin_msg_period)
         row4.addWidget(self.check_msg_fd)
         row4.addWidget(self.check_msg_brs)
         row4.addStretch()
-        
-        # 按钮
-        row5 = QHBoxLayout()
-        self.btn_add_msg = QPushButton("➕ 添加消息")
-        self.btn_add_msg.clicked.connect(self.add_message)
-        self.btn_add_msg.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-weight: bold; padding: 8px; }")
-        
-        self.btn_update_msg = QPushButton("✏️ 更新消息")
-        self.btn_update_msg.clicked.connect(self.update_message)
-        self.btn_update_msg.setEnabled(False)
-        
-        row5.addWidget(self.btn_add_msg)
-        row5.addWidget(self.btn_update_msg)
         
         edit_layout.addLayout(row1)
         edit_layout.addLayout(row2)
         edit_layout.addLayout(row3)
         edit_layout.addLayout(row4)
-        edit_layout.addLayout(row5)
         edit_group.setLayout(edit_layout)
         
-        # === 消息列表表格 ===
+        btn_row = QHBoxLayout()
+        self.btn_add_msg = QPushButton("➕ 添加")
+        self.btn_add_msg.clicked.connect(self.add_message)
+        self.btn_update_msg = QPushButton("💾 更新")
+        self.btn_update_msg.clicked.connect(self.update_message)
+        self.btn_update_msg.setEnabled(False)
+        btn_row.addWidget(self.btn_add_msg)
+        btn_row.addWidget(self.btn_update_msg)
+        
         list_group = QGroupBox("消息列表")
         list_layout = QVBoxLayout()
         
-        # 工具栏
-        toolbar = QHBoxLayout()
-        self.btn_start_all = QPushButton("▶ 启动全部")
-        self.btn_start_all.clicked.connect(self.start_all_messages)
-        
-        self.btn_stop_all = QPushButton("⏹ 停止全部")
-        self.btn_stop_all.clicked.connect(self.stop_all_messages)
-        
-        self.btn_delete_msg = QPushButton("🗑 删除")
-        self.btn_delete_msg.clicked.connect(self.delete_message)
-        
-        self.btn_clear_msgs = QPushButton("清空列表")
-        self.btn_clear_msgs.clicked.connect(self.clear_messages)
-        
-        toolbar.addWidget(self.btn_start_all)
-        toolbar.addWidget(self.btn_stop_all)
-        toolbar.addWidget(self.btn_delete_msg)
-        toolbar.addWidget(self.btn_clear_msgs)
-        toolbar.addStretch()
-        
-        # 消息表格
-        self.msg_table = QTableWidget(0, 8)
+        self.msg_table = QTableWidget(0, 7)
         self.msg_table.setHorizontalHeaderLabels([
-            "✓", "名称", "CAN ID", "周期(ms)", "类型", "计数", "数据", "操作"
+            "使能", "名称", "ID", "周期(ms)", "类型", "计数", "数据"
         ])
-        
-        header = self.msg_table.horizontalHeader()
-        self.msg_table.setColumnWidth(0, 40)
-        self.msg_table.setColumnWidth(1, 120)
+        self.msg_table.setColumnWidth(0, 50)
         self.msg_table.setColumnWidth(2, 80)
         self.msg_table.setColumnWidth(3, 80)
         self.msg_table.setColumnWidth(4, 80)
         self.msg_table.setColumnWidth(5, 60)
-        header.setStretchLastSection(False)
-        self.msg_table.setColumnWidth(6, 300)
-        self.msg_table.setColumnWidth(7, 100)
-        
+        self.msg_table.horizontalHeader().setStretchLastSection(True)
         self.msg_table.itemSelectionChanged.connect(self.on_message_selected)
         
-        list_layout.addLayout(toolbar)
+        msg_btn_row = QHBoxLayout()
+        self.btn_start_all = QPushButton("▶ 全部启动")
+        self.btn_start_all.clicked.connect(self.start_all_messages)
+        self.btn_stop_all = QPushButton("⏸ 全部停止")
+        self.btn_stop_all.clicked.connect(self.stop_all_messages)
+        self.btn_delete_msg = QPushButton("🗑️ 删除")
+        self.btn_delete_msg.clicked.connect(self.delete_message)
+        self.btn_clear_msgs = QPushButton("清空")
+        self.btn_clear_msgs.clicked.connect(self.clear_messages)
+        
+        msg_btn_row.addWidget(self.btn_start_all)
+        msg_btn_row.addWidget(self.btn_stop_all)
+        msg_btn_row.addWidget(self.btn_delete_msg)
+        msg_btn_row.addWidget(self.btn_clear_msgs)
+        
         list_layout.addWidget(self.msg_table)
+        list_layout.addLayout(msg_btn_row)
         list_group.setLayout(list_layout)
         
         layout.addWidget(edit_group)
+        layout.addLayout(btn_row)
         layout.addWidget(list_group)
         
         return panel
     
     def create_dual_view_panel(self):
-        """创建双视图接收面板"""
+        """创建双视图面板"""
         panel = QWidget()
         layout = QVBoxLayout(panel)
         
-        # 创建选项卡
-        self.tab_widget = QTabWidget()
-        self.tab_widget.currentChanged.connect(self.on_tab_changed)
+        self.view_tabs = QTabWidget()
         
-        # === 统计视图 ===
-        stats_tab = self.create_statistics_view()
-        self.tab_widget.addTab(stats_tab, "📊 统计视图")
+        stats_view = self.create_statistics_view()
+        self.view_tabs.addTab(stats_view, "📊 统计视图")
         
-        # === 滚动视图 ===
-        scroll_tab = self.create_scroll_view()
-        self.tab_widget.addTab(scroll_tab, "📜 滚动视图")
+        scroll_view = self.create_scroll_view()
+        self.view_tabs.addTab(scroll_view, "📜 滚动视图")
         
-        layout.addWidget(self.tab_widget)
+        self.view_tabs.currentChanged.connect(self.on_tab_changed)
+        
+        layout.addWidget(self.view_tabs)
         return panel
     
     def create_statistics_view(self):
         """创建统计视图"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+        view = QWidget()
+        layout = QVBoxLayout(view)
         
-        # 工具栏
         toolbar = QHBoxLayout()
-        
-        self.btn_reset_stats = QPushButton("🔄 重置统计")
-        self.btn_reset_stats.clicked.connect(self.clear_statistics_view)
-        
-        self.btn_export_stats = QPushButton("💾 导出统计")
+        self.btn_clear_stats = QPushButton("🗑️ 清空统计")
+        self.btn_clear_stats.clicked.connect(self.clear_statistics_view)
+        self.btn_export_stats = QPushButton("💾 导出")
         self.btn_export_stats.clicked.connect(self.save_statistics_data)
         
-        self.label_stats_rx = QLabel("RX: 0")
-        self.label_stats_rx.setStyleSheet("color: green; font-weight: bold;")
+        self.label_stats = QLabel("总计: 0 个ID")
+        self.label_stats.setStyleSheet("font-weight: bold;")
         
-        self.label_stats_tx = QLabel("TX: 0")
-        self.label_stats_tx.setStyleSheet("color: blue; font-weight: bold;")
-        
-        self.label_unique_ids = QLabel("ID数: 0")
-        
-        toolbar.addWidget(self.btn_reset_stats)
+        toolbar.addWidget(self.btn_clear_stats)
         toolbar.addWidget(self.btn_export_stats)
         toolbar.addSpacing(20)
-        toolbar.addWidget(self.label_stats_rx)
-        toolbar.addWidget(self.label_stats_tx)
-        toolbar.addWidget(self.label_unique_ids)
+        toolbar.addWidget(self.label_stats)
         toolbar.addStretch()
         
-        # 统计表格
         self.stats_table = QTableWidget(0, 8)
         self.stats_table.setHorizontalHeaderLabels([
-            "CAN ID", "RX计数", "TX计数", "总计", "周期(ms)", "最后时间", "最后数据", "状态"
+            "CAN ID", "方向", "RX计数", "TX计数", "周期(ms)", "最后时间", "最后数据", "状态"
         ])
-        
-        header = self.stats_table.horizontalHeader()
         self.stats_table.setColumnWidth(0, 100)
-        self.stats_table.setColumnWidth(1, 80)
+        self.stats_table.setColumnWidth(1, 60)
         self.stats_table.setColumnWidth(2, 80)
         self.stats_table.setColumnWidth(3, 80)
         self.stats_table.setColumnWidth(4, 80)
-        self.stats_table.setColumnWidth(5, 130)
-        header.setStretchLastSection(True)
-        self.stats_table.setColumnWidth(7, 80)
-        
-        self.stats_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.stats_table.setAlternatingRowColors(True)
-        self.stats_table.setSortingEnabled(True)
+        self.stats_table.setColumnWidth(5, 120)
+        self.stats_table.horizontalHeader().setStretchLastSection(True)
         
         layout.addLayout(toolbar)
         layout.addWidget(self.stats_table)
         
-        return widget
+        return view
     
     def create_scroll_view(self):
         """创建滚动视图"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+        view = QWidget()
+        layout = QVBoxLayout(view)
         
-        # 工具栏
         toolbar = QHBoxLayout()
-        
-        self.btn_clear_scroll = QPushButton("🗑 清空")
+        self.btn_clear_scroll = QPushButton("🗑️ 清空")
         self.btn_clear_scroll.clicked.connect(self.clear_scroll_view)
         
         self.btn_pause = QPushButton("⏸ 暂停")
         self.btn_pause.setCheckable(True)
-        self.btn_pause.clicked.connect(self.toggle_pause)
+        self.btn_pause.toggled.connect(self.toggle_pause)
         
         self.btn_export_scroll = QPushButton("💾 导出")
         self.btn_export_scroll.clicked.connect(self.save_scroll_data)
         
         self.label_scroll_rx = QLabel("RX: 0")
-        self.label_scroll_rx.setStyleSheet("color: green; font-weight: bold;")
-        
         self.label_scroll_tx = QLabel("TX: 0")
-        self.label_scroll_tx.setStyleSheet("color: blue; font-weight: bold;")
-        
         self.label_scroll_total = QLabel("总计: 0")
         
-        # 滚动速度控制
         self.label_max_rows = QLabel("最大行数:")
         self.spin_max_rows = QSpinBox()
         self.spin_max_rows.setRange(100, 10000)
@@ -423,84 +672,110 @@ class PCANViewDual(QMainWindow):
         toolbar.addWidget(self.spin_max_rows)
         toolbar.addStretch()
         
-        # 滚动表格
         self.scroll_table = QTableWidget(0, 7)
         self.scroll_table.setHorizontalHeaderLabels([
-            "序号", "时间", "方向", "CAN ID", "类型", "DLC", "数据"
+            "时间", "方向", "ID", "DLC", "类型", "数据", "备注"
         ])
-        
-        header = self.scroll_table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self.scroll_table.setColumnWidth(0, 60)
-        self.scroll_table.setColumnWidth(1, 130)
-        self.scroll_table.setColumnWidth(2, 80)
-        self.scroll_table.setColumnWidth(3, 100)
+        self.scroll_table.setColumnWidth(0, 120)
+        self.scroll_table.setColumnWidth(1, 50)
+        self.scroll_table.setColumnWidth(2, 100)
+        self.scroll_table.setColumnWidth(3, 50)
         self.scroll_table.setColumnWidth(4, 80)
-        self.scroll_table.setColumnWidth(5, 50)
-        header.setStretchLastSection(True)
-        
-        self.scroll_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.scroll_table.setAlternatingRowColors(True)
+        self.scroll_table.horizontalHeader().setStretchLastSection(True)
         
         layout.addLayout(toolbar)
         layout.addWidget(self.scroll_table)
         
-        return widget
+        return view
     
     def create_statusbar(self):
         """创建状态栏"""
         self.statusBar().showMessage("就绪")
     
-    def connect_device(self):
-        """连接设备"""
-        try:
-            vid = int(self.edit_vid.text(), 16)
-            pid = int(self.edit_pid.text(), 16)
+    def connect_device_with_scan(self):
+        """使用扫描对话框连接设备"""
+        dialog = DeviceScanDialog(self)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            device = dialog.selected_device
+            config = dialog.selected_config
             
-            self.statusBar().showMessage("正在连接设备...")
+            if not device or not config:
+                return
             
-            self.can_device = GsUsbFDCAN(vid, pid)
-            self.can_device.setup()
-            self.can_device.start(use_fd=True)
-            
-            self.is_connected = True
-            self.btn_connect.setEnabled(False)
-            self.btn_disconnect.setEnabled(True)
-            
-            self.label_status.setText("● 已连接")
-            self.label_status.setStyleSheet("color: green; font-weight: bold; font-size: 12px;")
-            
-            # 启动接收定时器
-            self.rx_timer.start(10)
-            
-            # 启动统计更新定时器
-            self.stats_timer.start(500)  # 500ms 更新一次统计视图
-            
-            self.statusBar().showMessage("设备连接成功!", 3000)
-            QMessageBox.information(self, "成功", "设备连接成功!\n可以开始发送消息。")
-            
-        except Exception as e:
-            self.statusBar().showMessage("连接失败", 3000)
-            QMessageBox.critical(self, "连接错误", f"无法连接设备:\n{str(e)}")
+            try:
+                self.statusBar().showMessage("正在连接设备...")
+                
+                # 创建设备
+                if USE_NATIVE:
+                    self.can_device = gs_usb.GsUsbFDCAN(device.vid, device.pid)
+                else:
+                    self.can_device = GsUsbFDCAN(device.vid, device.pid)
+                
+                # 配置设备
+                self.can_device.setup(
+                    nominal_bitrate=config['nominal_bitrate'],
+                    data_bitrate=config['data_bitrate']
+                )
+                
+                # 启动设备
+                self.can_device.start(use_fd=config['use_fd'])
+                
+                self.is_connected = True
+                self.current_config = config
+                
+                self.btn_connect.setEnabled(False)
+                self.btn_disconnect.setEnabled(True)
+                
+                self.label_status.setText("● 已连接")
+                self.label_status.setStyleSheet("color: green; font-weight: bold; font-size: 12px;")
+                
+                # 显示设备信息
+                mode_str = "CAN FD" if config['use_fd'] else "经典 CAN"
+                if config['use_brs']:
+                    mode_str += " (BRS)"
+                
+                info_text = (f"{device.product} | {mode_str} | "
+                           f"仲裁段: {config['nominal_bitrate']//1000}kbps | "
+                           f"数据段: {config['data_bitrate']//1000}kbps")
+                self.label_device_info.setText(info_text)
+                
+                # 启动定时器
+                self.rx_timer.start(10)
+                self.stats_timer.start(500)
+                
+                self.statusBar().showMessage("设备连接成功!", 3000)
+                QMessageBox.information(self, "成功", 
+                    f"设备连接成功!\n\n"
+                    f"设备: {device.product}\n"
+                    f"模式: {mode_str}\n"
+                    f"仲裁段: {config['nominal_bitrate']//1000} kbps\n"
+                    f"数据段: {config['data_bitrate']//1000} kbps"
+                )
+                
+            except Exception as e:
+                self.statusBar().showMessage("连接失败", 3000)
+                QMessageBox.critical(self, "连接错误", f"无法连接设备:\n{str(e)}")
     
     def disconnect_device(self):
         """断开设备"""
-        self.stop_all_messages()
-        
         if self.can_device:
-            self.rx_timer.stop()
-            self.stats_timer.stop()
-            self.can_device.stop()
-            self.can_device = None
+            try:
+                self.stop_all_messages()
+                self.rx_timer.stop()
+                self.stats_timer.stop()
+                self.can_device.stop()
+                self.can_device = None
+            except:
+                pass
         
         self.is_connected = False
         self.btn_connect.setEnabled(True)
         self.btn_disconnect.setEnabled(False)
-        
         self.label_status.setText("● 未连接")
         self.label_status.setStyleSheet("color: red; font-weight: bold; font-size: 12px;")
-        
-        self.statusBar().showMessage("设备已断开", 3000)
+        self.label_device_info.setText("")
+        self.statusBar().showMessage("设备已断开", 2000)
     
     def add_message(self):
         """添加消息"""
@@ -536,14 +811,13 @@ class PCANViewDual(QMainWindow):
         """刷新消息列表"""
         self.msg_table.setRowCount(0)
         
-        for idx, msg in enumerate(self.message_list):
-            row = self.msg_table.rowCount()
+        for row, msg in enumerate(self.message_list):
             self.msg_table.insertRow(row)
             
             # 使能复选框
             chk = QCheckBox()
             chk.setChecked(msg.enabled)
-            chk.stateChanged.connect(lambda state, i=idx: self.toggle_message(i, state))
+            chk.stateChanged.connect(lambda state, idx=row: self.toggle_message(idx, state))
             chk_widget = QWidget()
             chk_layout = QHBoxLayout(chk_widget)
             chk_layout.addWidget(chk)
@@ -551,35 +825,33 @@ class PCANViewDual(QMainWindow):
             chk_layout.setContentsMargins(0, 0, 0, 0)
             self.msg_table.setCellWidget(row, 0, chk_widget)
             
-            self.msg_table.setItem(row, 1, QTableWidgetItem(msg.name))
+            # 名称
+            name_item = QTableWidgetItem(msg.name)
+            name_item.setFont(QFont("", 9, QFont.Weight.Bold))
+            self.msg_table.setItem(row, 1, name_item)
+            
+            # ID
             self.msg_table.setItem(row, 2, QTableWidgetItem(f"0x{msg.can_id:03X}"))
+            
+            # 周期
             self.msg_table.setItem(row, 3, QTableWidgetItem(str(msg.period)))
             
+            # 类型
             type_str = "FD" if msg.use_fd else "CAN"
             if msg.use_brs:
                 type_str += "+BRS"
             self.msg_table.setItem(row, 4, QTableWidgetItem(type_str))
             
+            # 计数
             count_item = QTableWidgetItem(str(msg.tx_count))
             count_item.setForeground(QColor(0, 100, 200))
             self.msg_table.setItem(row, 5, count_item)
             
+            # 数据
             data_str = ' '.join(f'{b:02X}' for b in msg.data)
             data_item = QTableWidgetItem(data_str)
             data_item.setFont(QFont("Consolas", 9))
             self.msg_table.setItem(row, 6, data_item)
-            
-            # 操作按钮
-            btn_widget = QWidget()
-            btn_layout = QHBoxLayout(btn_widget)
-            btn_layout.setContentsMargins(2, 2, 2, 2)
-            
-            btn_edit = QPushButton("编辑")
-            btn_edit.setMaximumWidth(50)
-            btn_edit.clicked.connect(lambda checked, i=idx: self.edit_message(i))
-            
-            btn_layout.addWidget(btn_edit)
-            self.msg_table.setCellWidget(row, 7, btn_widget)
     
     def toggle_message(self, index, state):
         """切换消息使能"""
@@ -620,10 +892,7 @@ class PCANViewDual(QMainWindow):
                 msg.tx_count += 1
                 self.msg_table.item(index, 5).setText(str(msg.tx_count))
                 
-                # 更新统计
                 self.update_statistics(msg.can_id, "TX", msg.data)
-                
-                # 添加到滚动视图
                 self.add_scroll_row("TX", msg.can_id, len(msg.data), msg.data, 
                                   msg.use_fd, msg.use_brs, msg.name)
                 
@@ -683,42 +952,25 @@ class PCANViewDual(QMainWindow):
     
     def delete_message(self):
         """删除消息"""
-        current_row = self.msg_table.currentRow()
-        if current_row < 0 or current_row >= len(self.message_list):
-            QMessageBox.information(self, "提示", "请先选择要删除的消息")
-            return
-        
-        msg = self.message_list[current_row]
-        
-        reply = QMessageBox.question(
-            self, "确认删除", f"确定要删除消息 '{msg.name}' 吗?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            if msg.timer:
-                msg.timer.stop()
+        selected = self.msg_table.currentRow()
+        if selected >= 0 and selected < len(self.message_list):
+            msg = self.message_list[selected]
+            if msg.enabled:
+                self.toggle_message(selected, Qt.CheckState.Unchecked.value)
             
-            del self.message_list[current_row]
+            del self.message_list[selected]
             self.refresh_message_table()
-            
             self.statusBar().showMessage("消息已删除", 2000)
     
     def clear_messages(self):
         """清空消息"""
-        if not self.message_list:
-            return
-        
-        reply = QMessageBox.question(
-            self, "确认清空", "确定要清空所有消息吗?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
+        reply = QMessageBox.question(self, "确认", "确定要清空所有消息吗?",
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             self.stop_all_messages()
             self.message_list.clear()
-            self.msg_table.setRowCount(0)
-            self.statusBar().showMessage("消息列表已清空", 2000)
+            self.refresh_message_table()
+            self.statusBar().showMessage("消息已清空", 2000)
     
     def start_all_messages(self):
         """启动所有消息"""
@@ -726,48 +978,48 @@ class PCANViewDual(QMainWindow):
             QMessageBox.warning(self, "警告", "请先连接设备!")
             return
         
-        for idx in range(len(self.message_list)):
-            if not self.message_list[idx].enabled:
-                self.toggle_message(idx, Qt.CheckState.Checked.value)
-        
-        self.refresh_message_table()
-        self.statusBar().showMessage("已启动所有消息", 2000)
+        for row in range(len(self.message_list)):
+            chk_widget = self.msg_table.cellWidget(row, 0)
+            chk = chk_widget.findChild(QCheckBox)
+            if chk:
+                chk.setChecked(True)
     
     def stop_all_messages(self):
         """停止所有消息"""
-        for idx in range(len(self.message_list)):
-            if self.message_list[idx].enabled:
-                self.toggle_message(idx, Qt.CheckState.Unchecked.value)
-        
-        self.refresh_message_table()
-        self.statusBar().showMessage("已停止所有消息", 2000)
+        for row in range(len(self.message_list)):
+            chk_widget = self.msg_table.cellWidget(row, 0)
+            chk = chk_widget.findChild(QCheckBox)
+            if chk:
+                chk.setChecked(False)
     
     def on_message_selected(self):
         """消息选择变化"""
-        pass
+        selected = self.msg_table.currentRow()
+        if selected >= 0:
+            self.edit_message(selected)
     
     def receive_data(self):
         """接收数据"""
-        if not self.is_connected:
+        if not self.is_connected or not self.can_device:
             return
         
-        frames = self.can_device.get_received_frames(100)
-        
-        for frame in frames:
-            # 更新统计
-            self.update_statistics(frame['can_id'], "RX", frame['data'])
+        try:
+            frames = self.can_device.get_received_frames(100)
             
-            # 添加到滚动视图（如果未暂停）
-            if not self.is_paused:
-                self.add_scroll_row(
-                    "RX",
-                    frame['can_id'],
-                    frame['dlc'],
-                    frame['data'],
-                    frame['is_fd'],
-                    frame['is_brs'],
-                    ""
-                )
+            for frame in frames:
+                can_id = frame['can_id']
+                data = frame['data']
+                is_fd = frame['is_fd']
+                is_brs = frame['is_brs']
+                dlc = frame['dlc']
+                
+                self.update_statistics(can_id, "RX", data)
+                
+                if not self.is_paused:
+                    self.add_scroll_row("RX", can_id, dlc, data, is_fd, is_brs)
+            
+        except Exception as e:
+            print(f"接收错误: {e}")
     
     def update_statistics(self, can_id, direction, data):
         """更新统计信息"""
@@ -779,69 +1031,64 @@ class PCANViewDual(QMainWindow):
         
         if direction == "RX":
             stat.rx_count += 1
-            
-            # 计算周期时间
-            if stat.last_rx_time:
-                cycle_ms = (current_time - stat.last_rx_time) * 1000
-                stat.cycle_time_ms = int(cycle_ms)
-            
+            if stat.last_rx_time > 0:
+                period = (current_time - stat.last_rx_time) * 1000
+                stat.periods.append(period)
+                if len(stat.periods) > 10:
+                    stat.periods.pop(0)
             stat.last_rx_time = current_time
-            
-        elif direction == "TX":
+        else:
             stat.tx_count += 1
         
-        stat.last_data = data
         stat.last_time = current_time
+        stat.last_data = data
     
     def update_statistics_view(self):
         """更新统计视图表格"""
-        # 保存当前排序状态
-        was_sorting_enabled = self.stats_table.isSortingEnabled()
-        self.stats_table.setSortingEnabled(False)
+        self.stats_table.setRowCount(0)
         
-        # 更新或添加行
-        existing_rows = {}
-        for row in range(self.stats_table.rowCount()):
-            can_id_text = self.stats_table.item(row, 0).text()
-            can_id = int(can_id_text, 16)
-            existing_rows[can_id] = row
-        
-        for can_id, stat in self.statistics.items():
-            if can_id in existing_rows:
-                row = existing_rows[can_id]
+        for row, (can_id, stat) in enumerate(sorted(self.statistics.items())):
+            self.stats_table.insertRow(row)
+            
+            # ID
+            id_item = QTableWidgetItem(f"0x{can_id:03X}")
+            id_item.setFont(QFont("", 9, QFont.Weight.Bold))
+            self.stats_table.setItem(row, 0, id_item)
+            
+            # 方向
+            if stat.rx_count > 0 and stat.tx_count > 0:
+                direction = "双向"
+            elif stat.rx_count > 0:
+                direction = "RX"
             else:
-                row = self.stats_table.rowCount()
-                self.stats_table.insertRow(row)
-                
-                # CAN ID
-                id_item = QTableWidgetItem(f"0x{can_id:03X}")
-                id_item.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
-                self.stats_table.setItem(row, 0, id_item)
+                direction = "TX"
+            self.stats_table.setItem(row, 1, QTableWidgetItem(direction))
             
             # RX计数
             rx_item = QTableWidgetItem(str(stat.rx_count))
             rx_item.setForeground(QColor(0, 150, 0))
-            self.stats_table.setItem(row, 1, rx_item)
+            self.stats_table.setItem(row, 2, rx_item)
             
             # TX计数
             tx_item = QTableWidgetItem(str(stat.tx_count))
-            tx_item.setForeground(QColor(0, 0, 200))
-            self.stats_table.setItem(row, 2, tx_item)
-            
-            # 总计
-            total = stat.rx_count + stat.tx_count
-            self.stats_table.setItem(row, 3, QTableWidgetItem(str(total)))
+            tx_item.setForeground(QColor(0, 100, 200))
+            self.stats_table.setItem(row, 3, tx_item)
             
             # 周期
-            if stat.cycle_time_ms > 0:
-                self.stats_table.setItem(row, 4, QTableWidgetItem(f"{stat.cycle_time_ms}"))
+            if len(stat.periods) > 0:
+                avg_period = sum(stat.periods) / len(stat.periods)
+                period_str = f"{avg_period:.1f}"
             else:
-                self.stats_table.setItem(row, 4, QTableWidgetItem("-"))
+                period_str = "-"
+            self.stats_table.setItem(row, 4, QTableWidgetItem(period_str))
             
             # 最后时间
-            if stat.last_time:
-                time_str = QDateTime.fromSecsSinceEpoch(int(stat.last_time)).toString("HH:mm:ss")
-                self.stats_table.setItem(row, 5, QTableWidgetItem(time_str))
+            if stat.last_time > 0:
+                dt = QDateTime.fromSecsSinceEpoch(int(stat.last_time))
+                time_str = dt.toString("hh:mm:ss.zzz")
+            else:
+                time_str = "-"
+            self.stats_table.setItem(row, 5, QTableWidgetItem(time_str))
             
             # 最后数据
             data_str = ' '.join(f'{b:02X}' for b in stat.last_data[:8])
@@ -860,128 +1107,86 @@ class PCANViewDual(QMainWindow):
                 status_item.setForeground(QColor(150, 150, 150))
             self.stats_table.setItem(row, 7, status_item)
         
-        # 更新统计标签
-        total_rx = sum(s.rx_count for s in self.statistics.values())
-        total_tx = sum(s.tx_count for s in self.statistics.values())
-        
-        self.label_stats_rx.setText(f"RX: {total_rx}")
-        self.label_stats_tx.setText(f"TX: {total_tx}")
-        self.label_unique_ids.setText(f"ID数: {len(self.statistics)}")
-        
-        # 恢复排序
-        self.stats_table.setSortingEnabled(was_sorting_enabled)
+        self.label_stats.setText(f"总计: {len(self.statistics)} 个ID")
     
     def add_scroll_row(self, direction, can_id, dlc, data, is_fd, is_brs, msg_name=""):
         """添加滚动视图行"""
+        if self.scroll_table.rowCount() >= self.spin_max_rows.value():
+            self.scroll_table.removeRow(0)
+        
         row = self.scroll_table.rowCount()
         self.scroll_table.insertRow(row)
         
-        # 序号
-        self.scroll_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
-        
         # 时间
-        time_str = QDateTime.currentDateTime().toString("HH:mm:ss.zzz")
-        self.scroll_table.setItem(row, 1, QTableWidgetItem(time_str))
+        now = QDateTime.currentDateTime()
+        time_str = now.toString("hh:mm:ss.zzz")
+        self.stats_table.setItem(row, 0, QTableWidgetItem(time_str))
         
         # 方向
-        dir_text = direction
-        if msg_name:
-            dir_text += f"\n({msg_name})"
-        
-        dir_item = QTableWidgetItem(dir_text)
+        dir_item = QTableWidgetItem(direction)
         if direction == "RX":
             dir_item.setForeground(QColor(0, 150, 0))
-            dir_item.setBackground(QColor(230, 255, 230))
         else:
-            dir_item.setForeground(QColor(0, 0, 200))
-            dir_item.setBackground(QColor(230, 240, 255))
-        self.scroll_table.setItem(row, 2, dir_item)
+            dir_item.setForeground(QColor(0, 100, 200))
+        self.scroll_table.setItem(row, 1, dir_item)
         
-        # CAN ID
-        id_item = QTableWidgetItem(f"0x{can_id:03X}")
-        id_item.setFont(QFont("Consolas", 9))
-        self.scroll_table.setItem(row, 3, id_item)
+        # ID
+        self.scroll_table.setItem(row, 2, QTableWidgetItem(f"0x{can_id:03X}"))
+        
+        # DLC
+        self.scroll_table.setItem(row, 3, QTableWidgetItem(str(dlc)))
         
         # 类型
         type_str = "FD" if is_fd else "CAN"
         if is_brs:
             type_str += "+BRS"
-        type_item = QTableWidgetItem(type_str)
-        type_item.setForeground(QColor(255, 140, 0) if is_fd else QColor(100, 100, 100))
-        self.scroll_table.setItem(row, 4, type_item)
-        
-        # DLC
-        self.scroll_table.setItem(row, 5, QTableWidgetItem(str(dlc)))
+        self.scroll_table.setItem(row, 4, QTableWidgetItem(type_str))
         
         # 数据
         data_str = ' '.join(f'{b:02X}' for b in data)
         data_item = QTableWidgetItem(data_str)
         data_item.setFont(QFont("Consolas", 9))
-        self.scroll_table.setItem(row, 6, data_item)
+        self.scroll_table.setItem(row, 5, data_item)
+        
+        # 备注
+        self.scroll_table.setItem(row, 6, QTableWidgetItem(msg_name))
         
         # 自动滚动
-        if not self.is_paused:
-            self.scroll_table.scrollToBottom()
+        self.scroll_table.scrollToBottom()
         
-        # 更新标签
-        rx_count = sum(1 for r in range(self.scroll_table.rowCount()) 
-                      if self.scroll_table.item(r, 2).text().startswith("RX"))
+        # 更新计数
+        rx_count = sum(1 for i in range(self.scroll_table.rowCount()) 
+                      if self.scroll_table.item(i, 1) and self.scroll_table.item(i, 1).text() == "RX")
         tx_count = self.scroll_table.rowCount() - rx_count
         
         self.label_scroll_rx.setText(f"RX: {rx_count}")
         self.label_scroll_tx.setText(f"TX: {tx_count}")
         self.label_scroll_total.setText(f"总计: {self.scroll_table.rowCount()}")
-        
-        # 限制最大行数
-        max_rows = self.spin_max_rows.value()
-        while self.scroll_table.rowCount() > max_rows:
-            self.scroll_table.removeRow(0)
     
     def clear_scroll_view(self):
         """清空滚动视图"""
-        reply = QMessageBox.question(
-            self, "确认", "确定要清空滚动视图吗?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            self.scroll_table.setRowCount(0)
-            self.label_scroll_rx.setText("RX: 0")
-            self.label_scroll_tx.setText("TX: 0")
-            self.label_scroll_total.setText("总计: 0")
-            self.statusBar().showMessage("滚动视图已清空", 2000)
+        self.scroll_table.setRowCount(0)
+        self.label_scroll_rx.setText("RX: 0")
+        self.label_scroll_tx.setText("TX: 0")
+        self.label_scroll_total.setText("总计: 0")
     
     def clear_statistics_view(self):
         """清空统计视图"""
-        reply = QMessageBox.question(
-            self, "确认", "确定要重置统计数据吗?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            self.statistics.clear()
-            self.stats_table.setRowCount(0)
-            self.label_stats_rx.setText("RX: 0")
-            self.label_stats_tx.setText("TX: 0")
-            self.label_unique_ids.setText("ID数: 0")
-            self.statusBar().showMessage("统计数据已重置", 2000)
+        self.statistics.clear()
+        self.stats_table.setRowCount(0)
+        self.label_stats.setText("总计: 0 个ID")
     
     def toggle_pause(self, checked):
         """切换暂停"""
         self.is_paused = checked
         if checked:
             self.btn_pause.setText("▶ 继续")
-            self.statusBar().showMessage("滚动视图已暂停")
         else:
             self.btn_pause.setText("⏸ 暂停")
-            self.statusBar().showMessage("滚动视图已继续")
     
     def on_tab_changed(self, index):
         """标签页切换"""
-        if index == 0:
-            self.statusBar().showMessage("切换到统计视图", 1000)
-        else:
-            self.statusBar().showMessage("切换到滚动视图", 1000)
+        pass
     
     def save_scroll_data(self):
         """保存滚动数据"""
@@ -1107,32 +1312,32 @@ class PCANViewDual(QMainWindow):
         """显示关于"""
         about_text = """
         <h2>PCAN-View Pro</h2>
-        <p><b>版本:</b> 2.1 - 双视图模式</p>
+        <p><b>版本:</b> 3.0 - 增强版</p>
         <hr>
         <p><b>主要特性:</b></p>
         <ul>
+            <li>🔍 <b>设备扫描</b>: 自动扫描并列出 USB 设备</li>
+            <li>⚙️ <b>灵活配置</b>: 支持经典 CAN / CAN FD 模式切换</li>
+            <li>🎛️ <b>波特率可调</b>: 125k ~ 5M bps 多档位选择</li>
             <li>📊 <b>统计视图</b>: 按ID聚合，显示计数/周期/状态</li>
             <li>📜 <b>滚动视图</b>: 实时显示所有帧，可暂停</li>
-            <li>✅ 多消息独立周期发送</li>
-            <li>💾 配置保存/加载</li>
-            <li>📤 数据导出 (CSV)</li>
-            <li>🔄 CAN FD + BRS 支持</li>
+            <li>✅ <b>多消息发送</b>: 独立周期，支持BRS</li>
+            <li>💾 <b>数据导出</b>: CSV 格式保存</li>
+            <li>⚡ <b>高性能</b>: C++ 原生模块 (可选)</li>
         </ul>
-        <p><b>技术栈:</b> PyQt6 + PyUSB</p>
+        <p><b>技术栈:</b> PyQt6 + libusb + pybind11</p>
+        <p><b>作者:</b> GitHub Copilot</p>
         """
         QMessageBox.about(self, "关于", about_text)
     
     def closeEvent(self, event):
         """关闭事件"""
-        if self.is_connected or any(msg.enabled for msg in self.message_list):
-            reply = QMessageBox.question(
-                self, "确认退出", 
-                "设备仍在连接或有消息正在发送，确定要退出吗?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
+        if self.is_connected:
+            reply = QMessageBox.question(self, "确认退出", 
+                "设备仍在连接中，确定要退出吗?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             
             if reply == QMessageBox.StandardButton.Yes:
-                self.stop_all_messages()
                 self.disconnect_device()
                 event.accept()
             else:

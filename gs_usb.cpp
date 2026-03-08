@@ -23,6 +23,26 @@ uint8_t GsUsb::LenToDlcCode(uint16_t len) {
     }
 }
 
+uint8_t GsUsb::DlcCodeToLen(uint8_t dlc_code) {
+    if(dlc_code <= 8) {
+        return dlc_code;
+    }else if(dlc_code == 9){
+        return 12;
+    }else if(dlc_code == 10){
+        return 16;
+    }else if(dlc_code == 11) {
+        return 20;
+    }else if(dlc_code == 12) {
+        return 24;
+    }else if(dlc_code == 13) {
+        return 32;
+    }else if(dlc_code == 14) {
+        return 48;
+    }else {
+        return 64; // For DLC code of 15, length is set to maximum (64)
+    }
+}
+
 double GsUsb::GetTimestamp() {
     using namespace std::chrono;
     auto now = steady_clock::now();
@@ -138,6 +158,8 @@ void GsUsb::Start(bool use_fd){
 void GsUsb::Stop(){
     std::cout << "Stopping device..." << std::endl;
 
+    stop_flag.store(true);
+
     if(rx_thread.joinable()) {
         std::cout << "Waiting for receive thread to stop..." << std::endl;
         rx_thread.join();
@@ -150,7 +172,6 @@ void GsUsb::Stop(){
     }catch(...){
     }
     
-    stop_flag.store(true);
 }
 
 void GsUsb::ReceiveLoop(){
@@ -164,7 +185,13 @@ void GsUsb::ReceiveLoop(){
 
     while(!stop_flag.load()){
         try{
-            int ret =libusb_bulk_transfer(dev_handle, 0x81, buffer, sizeof(buffer), nullptr, 100);
+            int ret =libusb_bulk_transfer(
+                        dev_handle,
+                        0x81,
+                        buffer, 
+                        sizeof(buffer), 
+                        &transferred,
+                        100);
 
             if(ret == LIBUSB_ERROR_TIMEOUT){
                 consecutive_errors = 0; // 超时不算错误，继续等待数据
@@ -208,7 +235,7 @@ void GsUsb::ReceiveLoop(){
                     frame.dlc = dlc;
                     frame.flags = flags;
                     frame.timestamp = GetTimestamp();
-                    frame.data.assign(buffer + 12, buffer + 12 + dlc);
+                    frame.data.assign(buffer + 12, buffer + 12 + DlcCodeToLen(dlc));
                 
                     {
                         std::lock_guard<std::mutex> lock(rx_queue_mutex);
@@ -250,41 +277,54 @@ std::vector<CANFrame> GsUsb::GetReceivedFrames(size_t max_count){
     return frames;
 }
 
-bool GsUsb::SendFDFrame(uint32_t can_id, const std::vector<uint8_t>& data, bool use_brs){
+bool GsUsb::SendFrame(uint32_t can_id, const std::vector<uint8_t>& data, bool use_fd, bool use_brs){
     uint16_t len = data.size();
-    if(len > 64){
-        std::cerr << "Data length exceeds maximum for CAN FD: " << len << " bytes" << std::endl;
-        return false;
-    }
-
+    uint8_t flags = 0;
+    int packet_size = 0;
     uint8_t dlc_code = GsUsb::LenToDlcCode(len);
-    uint8_t flags = GS_CAN_FLAG_FD;
-    if(use_brs){
-        flags |= GS_CAN_FLAG_BRS;
+
+    if(use_fd){
+        if(len > 64){
+            std::cerr << "Data length exceeds maximum for CAN FD: " << len << " bytes" << std::endl;
+            return false;
+        }
+        dlc_code = GsUsb::LenToDlcCode(len);
+        flags |= GS_CAN_FLAG_FD;
+        if(use_brs){
+            flags |= GS_CAN_FLAG_BRS;
+        }
+        packet_size = 76;
+    }else{
+        if(len > 8){
+            std::cerr << "Data length exceeds maximum for classic CAN: " << len << " bytes" << std::endl;
+            return false;
+        }
+        dlc_code = GsUsb::LenToDlcCode(len);
+        flags = 0; 
+        packet_size = 20; // 12字节头 + 8字节数据
     }
 
     if(can_id > 0x7FF){
         can_id |= 0x80000000; // 设置扩展帧标志
     }
 
-    uint8_t packet[76] = {0};
+    std::vector<uint8_t> packet(packet_size, 0); 
     uint32_t echo_id = 0x00000001; // 发送帧
 
-    std::memcpy(packet, &echo_id, 4);
-    std::memcpy(packet + 4, &can_id, 4);
+    std::memcpy(packet.data(), &echo_id, 4);
+    std::memcpy(packet.data() + 4, &can_id, 4);
     packet[8] = dlc_code;
     packet[9] = 0; // channel
     packet[10] = flags;
     packet[11] = 0; // reserved
-    std::memcpy(packet + 12, data.data(), len);
-    std::memset(packet + 12 + len, 0, 64 - len); // 填充剩余数据为0
+    std::memcpy(packet.data() + 12, data.data(), len);
 
     int transferred;
     int ret = libusb_bulk_transfer(
         dev_handle, 
         0x02, 
-        packet,
-        sizeof(packet), 
+        packet.data(),
+        packet.size(), 
         &transferred, 
         1000);
 
@@ -317,4 +357,168 @@ void GsUsb::DrainRxBuffer(){
     }
 }
 
+std::vector<USBDeviceInfo> GsUsb::ScanDevices(){
+    std::vector<USBDeviceInfo> devices;
 
+    libusb_context* scan_ctx = nullptr;
+    int ret = libusb_init(&scan_ctx);
+    if(ret < 0) {
+        std::cerr << "Failed to initialize libusb for scanning: " << libusb_error_name(ret) << std::endl;
+        return devices;
+    }
+
+    libusb_device **devs;
+    libusb_device *found = NULL;
+    ssize_t cnt = libusb_get_device_list(NULL, &devs);
+    ssize_t i = 0;
+
+    if (cnt < 0){
+        std::cerr << "Failed to get device list: " << libusb_error_name(cnt) << std::endl;
+        libusb_exit(scan_ctx);
+        return devices;
+    }
+    
+    for (i = 0; i < cnt; i++) {
+        libusb_device *device = devs[i];
+        libusb_device_descriptor desc;
+        if(libusb_get_device_descriptor(device, &desc) == 0){
+            USBDeviceInfo info;
+            info.vid = desc.idVendor;
+            info.pid = desc.idProduct;
+            info.bus = libusb_get_bus_number(device);
+            info.addr= libusb_get_device_address(device);
+            info.is_candlelight = (desc.idVendor == 0x1d50 && desc.idProduct == 0x606f);
+
+            libusb_device_handle* handle;
+            if(libusb_open(device, &handle) == 0){
+                unsigned char buffer[256];
+                if(desc.iManufacturer){
+                    if(libusb_get_string_descriptor_ascii(handle, desc.iManufacturer, buffer, sizeof(buffer)) > 0){
+                        info.manufacturer = reinterpret_cast<char*>(buffer);
+                    }
+                }
+                if(desc.iProduct){
+                    if(libusb_get_string_descriptor_ascii(handle, desc.iProduct, buffer, sizeof(buffer)) > 0){
+                        info.product = reinterpret_cast<char*>(buffer);
+                    }
+                }
+                if(desc.iSerialNumber){
+                    if(libusb_get_string_descriptor_ascii(handle, desc.iSerialNumber, buffer, sizeof(buffer)) > 0){
+                        info.serial = reinterpret_cast<char*>(buffer);
+                    }
+                }
+                libusb_close(handle);
+            }
+            devices.push_back(info);
+        }
+    }
+
+    libusb_free_device_list(devs, 1);
+    libusb_exit(scan_ctx);
+    return devices;
+}
+
+GsUsb* GsUsb::OpenByBusAddr(uint8_t bus, uint8_t address){
+    libusb_context* ctx = nullptr;
+    int ret = libusb_init(&ctx);
+    if(ret < 0) {
+        std::cerr << "Failed to initialize libusb for opening device: " << libusb_error_name(ret) << std::endl;
+        return nullptr;
+    }
+
+    libusb_device** devs;
+    ssize_t cnt = libusb_get_device_list(ctx, &devs);
+    libusb_device* target_dev = nullptr;
+
+    if(cnt < 0){
+        std::cerr << "Failed to get device list: " << libusb_error_name(cnt) << std::endl;
+        libusb_exit(ctx);
+        return nullptr;
+    }
+
+    for(ssize_t i=0; i<cnt; ++i){
+        if(libusb_get_bus_number(devs[i]) == bus &&
+           libusb_get_device_address(devs[i]) == address){
+            target_dev = devs[i];
+            break;
+        }
+    }
+
+    if(!target_dev){
+        std::cerr << "Device not found on bus " << static_cast<int>(bus) << " address " << static_cast<int>(address) << std::endl;
+        libusb_free_device_list(devs, 1);
+        libusb_exit(ctx);
+        throw std::runtime_error("Device not found");
+    }
+
+    libusb_device_descriptor desc;
+    libusb_get_device_descriptor(target_dev, &desc);
+
+    libusb_free_device_list(devs, 1);
+    libusb_exit(ctx);
+
+    GsUsb* device = new GsUsb(desc.idVendor, desc.idProduct);
+    return device;
+}
+
+BitTimingConfig GsUsb::CalculateBitTiming(uint32_t bitrate, uint32_t clock_freq){
+    BitTimingConfig config;
+
+    // 40MHz预定义
+    if(clock_freq == 40000000){
+        switch (bitrate) {
+            case 125000:  // 125kbps
+                config = {15, 16, 8, 8, 8};
+                break;
+            case 250000:  // 250kbps
+                config = {15, 16, 8, 8, 4};
+                break;
+            case 500000:  // 500kbps (默认)
+                config = {15, 16, 8, 8, 2};
+                break;
+            case 1000000: // 1Mbps
+                config = {15, 16, 8, 8, 1};
+                break;
+            case 2000000: // 2Mbps (FD 数据段)
+                config = {9, 5, 5, 5, 1};
+                break;
+            case 5000000: // 5Mbps (FD 数据段)
+                config = {3, 2, 2, 2, 1};
+                break;
+            default:
+                // 默认 500kbps
+                config = {15, 16, 8, 8, 2};
+        }
+    }
+    return config;
+}
+
+void GsUsb::SetupCustomBitTiming(const BitTimingConfig& nominal, const BitTimingConfig& data){
+    std::cout << "Setting up custom bit timing" << std::endl;
+
+    uint32_t byte_order = 0x0000BEEF;
+    SendControl(
+        GS_USB_BREQ_HOST_FORMAT, 
+        reinterpret_cast<uint8_t*>(&byte_order), 
+        0, 
+        sizeof(byte_order)
+    );   
+
+    uint32_t nominal_bt[5] = {nominal.prop_seg, nominal.phase_seg1, nominal.phase_seg2, nominal.sjw, nominal.brp};
+    SendControl(
+        GS_USB_BREQ_BITTIMING, 
+        reinterpret_cast<uint8_t*>(nominal_bt), 
+        0, 
+        sizeof(nominal_bt)
+    );
+
+    uint32_t data_bt[5] = {data.prop_seg, data.phase_seg1, data.phase_seg2, data.sjw, data.brp};
+    SendControl(
+        GS_USB_BREQ_DATA_BITTIMING, 
+        reinterpret_cast<uint8_t*>(data_bt), 
+        0, 
+        sizeof(data_bt)
+    );
+
+    std::cout << "Custom bit timing setup completed." << std::endl;
+}

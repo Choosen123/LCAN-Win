@@ -35,7 +35,7 @@ int main(){
             // 发送测试帧
             std::vector<uint8_t> data = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
             
-            bool success = can.SendFDFrame(0x123, data, true);
+            bool success = can.SendFrame(0x123, data, true);
             if (success) {
                 std::cout << "[TX] Sent frame " << (i + 1) << std::endl;
             } else {
