@@ -66,6 +66,10 @@ GsUsb::GsUsb(uint16_t vendor_id, uint16_t product_id) {
         throw std::runtime_error("Could not open USB device");
     }
 
+    libusb_reset_device(dev_handle);
+
+    libusb_set_auto_detach_kernel_driver(dev_handle, 1);
+
     //声明接口
     ret = libusb_claim_interface(dev_handle, interface_number);
     if(ret < 0) {
@@ -83,8 +87,11 @@ GsUsb::~GsUsb() {
     Stop();
     
     if(dev_handle) {
+        libusb_reset_device(dev_handle); 
         libusb_release_interface(dev_handle, 0);
         libusb_close(dev_handle);
+
+        dev_handle = nullptr;
     }
     if(ctx) libusb_exit(ctx);
 
@@ -119,11 +126,13 @@ void GsUsb::Setup(uint32_t nominal_bitrate, uint32_t data_bitrate){
     SendControl(GS_USB_BREQ_HOST_FORMAT, reinterpret_cast<uint8_t*>(&byte_order), 0, sizeof(byte_order));
 
     std::cout << "Setting up nominal bitrate: " << nominal_bitrate << " bps" << std::endl;
-    uint32_t nominal_bt[5] = {15, 16, 8, 8, 1};
+    BitTimingConfig nominal_config = CalculateBitTiming(nominal_bitrate);
+    uint32_t nominal_bt[5] = {nominal_config.prop_seg, nominal_config.phase_seg1, nominal_config.phase_seg2, nominal_config.sjw, nominal_config.brp};
     SendControl(GS_USB_BREQ_BITTIMING, reinterpret_cast<uint8_t*>(nominal_bt), 0, sizeof(nominal_bt));
 
     std::cout << "Setting up data bitrate: " << data_bitrate << " bps" << std::endl;
-    uint32_t data_bt[5] = {9, 5, 5, 5, 1};
+    BitTimingConfig data_config = CalculateBitTiming(data_bitrate);
+    uint32_t data_bt[5] = {data_config.prop_seg, data_config.phase_seg1, data_config.phase_seg2, data_config.sjw, data_config.brp};
     SendControl(GS_USB_BREQ_DATA_BITTIMING, reinterpret_cast<uint8_t*>(data_bt), 0, sizeof(data_bt));
 
     std::cout << "Setup completed." << std::endl;
@@ -328,7 +337,7 @@ bool GsUsb::SendFrame(uint32_t can_id, const std::vector<uint8_t>& data, bool us
         &transferred, 
         1000);
 
-    if(ret == 0 && transferred == sizeof(packet)){
+    if(ret == 0 && transferred == packet_size){
         tx_count.fetch_add(1);
         return true;
     }else{
@@ -521,4 +530,26 @@ void GsUsb::SetupCustomBitTiming(const BitTimingConfig& nominal, const BitTiming
     );
 
     std::cout << "Custom bit timing setup completed." << std::endl;
+}
+
+int GsUsb::GetBusLoad(){
+    uint16_t bus_load_raw = 0;
+
+    int ret = libusb_control_transfer(
+        dev_handle,
+        0xC1, 
+        GS_USB_BREQ_GET_BUS_LOAD, 
+        0, 
+        interface_number, 
+        reinterpret_cast<uint8_t*>(&bus_load_raw), 
+        sizeof(bus_load_raw), 
+        500
+    );
+
+    if(ret < 0) {
+        std::cerr << "Failed to get bus load." << std::endl;
+        return -1; // 返回-1表示获取失败
+    }
+
+    return (ret == 2) ? bus_load_raw : -1; // 成功返回总线负载值，否则返回-1
 }

@@ -96,7 +96,11 @@ public:
         
         return result;
     }
-
+    int get_bus_load() {
+        // 释放 GIL，防止 USB 控制传输阻塞 Python 主线程（虽然 2 字节很快，但这是好习惯）
+        py::gil_scoped_release release;
+        return device_->GetBusLoad(); // 调用 gs_usb.cpp 中的底层方法
+    }
     
     uint64_t get_rx_count() const {
         return device_->GetRxCount();
@@ -183,7 +187,10 @@ PYBIND11_MODULE(gs_usb, m) {
              "    - timestamp: Reception timestamp\n"
              "    - is_fd: True if CAN FD frame\n"
              "    - is_brs: True if bit rate switching was used")
-        
+
+        .def("get_bus_load", &PyGsUsb::get_bus_load, 
+             "Get current Bus Load from hardware (0-1000, representing 0.0%-100.0%)")
+
         .def("get_rx_count", &PyGsUsb::get_rx_count,
              "Get total received frame count")
         

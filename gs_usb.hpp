@@ -13,7 +13,8 @@ enum gs_usb_request_type {
     GS_USB_BREQ_BITTIMING = 1,
     GS_USB_BREQ_MODE = 2,
     GS_USB_BREQ_DATA_BITTIMING = 10,
-    GS_USB_BREQ_BERR = 9
+    GS_USB_BREQ_BERR = 9,
+    GS_USB_BREQ_GET_BUS_LOAD = 15
 };
 
 enum gs_usb_mode_constants {
@@ -85,6 +86,7 @@ public:
     static GsUsb* OpenByBusAddr(uint8_t bus, uint8_t address);
     static BitTimingConfig CalculateBitTiming(uint32_t bitrate, uint32_t clock_freq = 40000000);
     void SetupCustomBitTiming(const BitTimingConfig& nominal, const BitTimingConfig& data);
+    int GetBusLoad();
 
 private:
     libusb_context* ctx = nullptr;
