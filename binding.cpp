@@ -75,7 +75,6 @@ public:
         std::vector<uint8_t> data_vec(data_str.begin(), data_str.end());
         
         py::gil_scoped_release release;
-        // 调用修改后的底层函数
         return device_->SendFrame(can_id, data_vec, use_fd, use_brs);
     }
     

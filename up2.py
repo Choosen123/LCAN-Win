@@ -70,10 +70,10 @@ class ConfigDialog(QDialog):
         return {"device": self.selected_dev, "nom": int(self.combo_nom.currentText().split(' ')[0])*1000, "data": int(self.combo_data.currentText().split(' ')[0])*1000, "fd": self.rb_fd.isChecked()}
 
 # --- 4. 主界面 ---
-class PCANViewPro(QMainWindow):
+class LCANViewPro(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("GsUsb-View Pro")
+        self.setWindowTitle("LCAN-View Pro")
         self.resize(950, 500)
         self.device = None
         self.rx_map = {}
@@ -387,6 +387,17 @@ class PCANViewPro(QMainWindow):
             self.table_trace.setItem(tr, 4, QTableWidgetItem(data_s))
 
     def update_ui(self):
+
+        if self.device:
+            # 1. 检查底层 C++ 统计的原始接收总数
+            raw_rx_count = self.device.get_rx_count()
+            # 2. 检查当前 UI 内存映射里的 ID 数量
+            map_size = len(self.rx_map)
+            
+            # 打印到控制台观察
+            print(f"Raw RX Count: {raw_rx_count}, UI Map Size: {map_size}")
+            # self.status.showMessage(f"Total RX: {raw_rx_count} | IDs: {map_size}")
+
         for cid, m in self.rx_map.items():
             r = m['row']
             self.table_rx.item(r, 0).setText(f"{cid:03X}h")
@@ -501,4 +512,4 @@ class ReceiveThread(QThread):
 
 if __name__ == "__main__":
     a = QApplication(sys.argv); a.setStyle("Fusion")
-    w = PCANViewPro(); w.show(); sys.exit(a.exec())
+    w = LCANViewPro(); w.show(); sys.exit(a.exec())
