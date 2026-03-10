@@ -395,7 +395,7 @@ class LCANViewPro(QMainWindow):
             map_size = len(self.rx_map)
             
             # 打印到控制台观察
-            # print(f"Raw RX Count: {raw_rx_count}, UI Map Size: {map_size}")
+            print(f"Raw RX Count: {raw_rx_count}, UI Map Size: {map_size}")
             # self.status.showMessage(f"Total RX: {raw_rx_count} | IDs: {map_size}")
 
         for cid, m in self.rx_map.items():

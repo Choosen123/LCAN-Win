@@ -61,7 +61,8 @@ GsUsb::GsUsb(uint16_t vendor_id, uint16_t product_id) {
         throw std::runtime_error("Failed to initialize libusb: " + std::string(libusb_error_name(ret)));
     }
     
-    libusb_set_option(ctx, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_DEBUG);
+    // 开启调试日志（可选）
+    // libusb_set_option(ctx, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_DEBUG);
     
     std::cout << "Opening USB device with VID: " << std::hex << vendor_id << " PID: " << std::hex << product_id << std::dec << std::endl;
     // 打开指定设备
@@ -70,30 +71,10 @@ GsUsb::GsUsb(uint16_t vendor_id, uint16_t product_id) {
         libusb_exit(ctx);
         throw std::runtime_error("Could not open USB device");
     }
-    
-    // libusb_device **devs;
-    // ssize_t cnt = libusb_get_device_list(ctx, &devs);
-    // bool found = false;
 
-    // for (ssize_t i = 0; i < cnt; i++) {
-    //     struct libusb_device_descriptor desc;
-    //     libusb_get_device_descriptor(devs[i], &desc);
-    //     if (desc.idVendor == vendor_id && desc.idProduct == product_id) {
-    //         int r = libusb_open(devs[i], &dev_handle);
-    //         if (r < 0) {
-    //             libusb_free_device_list(devs, 1);
-    //             // 打印出具体的错误名，如 LIBUSB_ERROR_ACCESS 或 LIBUSB_ERROR_BUSY
-    //             throw std::runtime_error("Open failed: " + std::string(libusb_error_name(r)));
-    //         }
-    //         found = true;
-    //         break;
-    //     }
-    // }
-    // libusb_free_device_list(devs, 1);
-    // if (!found) throw std::runtime_error("Device not found");
+    libusb_reset_device(dev_handle);
 
     libusb_set_auto_detach_kernel_driver(dev_handle, 1);
-
     //声明接口
     ret = libusb_claim_interface(dev_handle, interface_number);
     if(ret < 0) {
@@ -166,7 +147,7 @@ void GsUsb::Start(bool use_fd){
     std::cout << "Starting device" << (use_fd ? " in CAN FD mode" : " in classic CAN mode") << std::endl;
 
     try{
-        uint32_t mode_data[2] = {GS_CAN_MODE_START, 0};
+        uint32_t mode_data[2] = {GS_CAN_MODE_RESET, 0};
         SendControl(GS_USB_BREQ_MODE, reinterpret_cast<uint8_t*>(mode_data), 0, sizeof(mode_data));
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }catch(...){
