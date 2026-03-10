@@ -3,6 +3,7 @@
 #include <iostream>
 #include <cstring>
 
+// 根据CAN FD规范，DLC编码与实际数据长度的映射关系如下：
 uint8_t GsUsb::LenToDlcCode(uint16_t len) {
     if(len <= 8) {
         return len;
@@ -23,6 +24,7 @@ uint8_t GsUsb::LenToDlcCode(uint16_t len) {
     }
 }
 
+// 根据CAN FD规范，DLC编码与实际数据长度的映射关系如下：
 uint8_t GsUsb::DlcCodeToLen(uint8_t dlc_code) {
     if(dlc_code <= 8) {
         return dlc_code;
@@ -43,6 +45,7 @@ uint8_t GsUsb::DlcCodeToLen(uint8_t dlc_code) {
     }
 }
 
+// 获取时间戳
 double GsUsb::GetTimestamp() {
     using namespace std::chrono;
     auto now = steady_clock::now();
@@ -58,6 +61,8 @@ GsUsb::GsUsb(uint16_t vendor_id, uint16_t product_id) {
         throw std::runtime_error("Failed to initialize libusb: " + std::string(libusb_error_name(ret)));
     }
     
+    libusb_set_option(ctx, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_DEBUG);
+    
     std::cout << "Opening USB device with VID: " << std::hex << vendor_id << " PID: " << std::hex << product_id << std::dec << std::endl;
     // 打开指定设备
     dev_handle = libusb_open_device_with_vid_pid(ctx, vendor_id, product_id);
@@ -65,8 +70,27 @@ GsUsb::GsUsb(uint16_t vendor_id, uint16_t product_id) {
         libusb_exit(ctx);
         throw std::runtime_error("Could not open USB device");
     }
+    
+    // libusb_device **devs;
+    // ssize_t cnt = libusb_get_device_list(ctx, &devs);
+    // bool found = false;
 
-    libusb_reset_device(dev_handle);
+    // for (ssize_t i = 0; i < cnt; i++) {
+    //     struct libusb_device_descriptor desc;
+    //     libusb_get_device_descriptor(devs[i], &desc);
+    //     if (desc.idVendor == vendor_id && desc.idProduct == product_id) {
+    //         int r = libusb_open(devs[i], &dev_handle);
+    //         if (r < 0) {
+    //             libusb_free_device_list(devs, 1);
+    //             // 打印出具体的错误名，如 LIBUSB_ERROR_ACCESS 或 LIBUSB_ERROR_BUSY
+    //             throw std::runtime_error("Open failed: " + std::string(libusb_error_name(r)));
+    //         }
+    //         found = true;
+    //         break;
+    //     }
+    // }
+    // libusb_free_device_list(devs, 1);
+    // if (!found) throw std::runtime_error("Device not found");
 
     libusb_set_auto_detach_kernel_driver(dev_handle, 1);
 

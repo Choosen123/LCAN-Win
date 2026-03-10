@@ -336,10 +336,10 @@ class LCANViewPro(QMainWindow):
             self.lbl_load_val.setText("0.0%") # 重置文字            
 
             # 1. 停止并删除 Python 接收线程
-            if hasattr(self, 'rx_thread'):
-                self.rx_thread.running = False
-                self.rx_thread.wait(2000) # 最多等2秒确保线程退出
-                del self.rx_thread # 显式删除引用
+            if hasattr(self, 'rx_t'):
+                self.rx_t.running = False
+                self.rx_t.wait(2000) # 最多等2秒确保线程退出
+                del self.rx_t# 显式删除引用
             
             # 2. 停止设备硬件通讯
             try:
@@ -395,7 +395,7 @@ class LCANViewPro(QMainWindow):
             map_size = len(self.rx_map)
             
             # 打印到控制台观察
-            print(f"Raw RX Count: {raw_rx_count}, UI Map Size: {map_size}")
+            # print(f"Raw RX Count: {raw_rx_count}, UI Map Size: {map_size}")
             # self.status.showMessage(f"Total RX: {raw_rx_count} | IDs: {map_size}")
 
         for cid, m in self.rx_map.items():

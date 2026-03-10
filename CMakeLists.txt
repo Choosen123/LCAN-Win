@@ -20,3 +20,13 @@ find_package(pybind11 REQUIRED)
 pybind11_add_module(gs_usb binding.cpp)
 target_link_libraries(gs_usb PRIVATE gs_usb_lib Python::Module)
 target_include_directories(gs_usb PRIVATE C:/msys64/ucrt64/include)
+
+
+add_custom_command(TARGET gs_usb POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E echo "Copying Python module to project root..."
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different 
+        $<TARGET_FILE:gs_usb>
+        ${CMAKE_SOURCE_DIR}/$<TARGET_FILE_NAME:gs_usb>
+    COMMAND ${CMAKE_COMMAND} -E echo "Done: $<TARGET_FILE_NAME:gs_usb>"
+    COMMENT "Copying Python module to project root"
+)
