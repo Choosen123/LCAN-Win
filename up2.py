@@ -313,51 +313,83 @@ class LCANViewPro(QMainWindow):
 
     def show_config(self):
         dlg = ConfigDialog(self)
-        if dlg.exec(): self.config = dlg.get_config()
+        # 如果当前已有配置，可以考虑传给弹窗做默认值(可选)
+        if dlg.exec():
+            new_config = dlg.get_config()
+            
+            # 检查是否有实质性修改，或者是否处于连接状态
+            is_running = self.device is not None
+            
+            # 更新配置
+            self.config = new_config
+            
+            if is_running:
+                print("Configuration changed. Reconnecting...")
+                self.reconnect_device()
+            else:
+                print("Configuration updated.")
 
-    def toggle_connection(self):
-        if not self.device:
-            if not self.config: self.show_config()
-            if not self.config: return
+    def reconnect_device(self):
+        """自动重连序列"""
+        self._do_disconnect()
+        # 稍微延迟，确保上一个连接彻底关闭
+        QTimer.singleShot(500, self._do_connect)
+
+    def _do_connect(self):
+            """执行实际的连接硬件逻辑"""
             try:
                 vid, pid = self.config['device']
                 self.device = gs_usb.GsUsbFDCAN(vid, pid)
                 self.device.setup(self.config['nom'], self.config['data'])
                 self.device.start(use_fd=self.config['fd'])
 
-                self.bus_load_timer.start(500) # 每500毫秒更新一次 Bus Load UI
-
-                self.rx_t = ReceiveThread(self.device); self.rx_t.frames_signal.connect(self.on_frames); self.rx_t.start()
+                self.bus_load_timer.start(500)
+                self.rx_t = ReceiveThread(self.device)
+                self.rx_t.frames_signal.connect(self.on_frames)
+                self.rx_t.start()
+                
                 self.act_conn.setIcon(self.style().standardIcon(QApplication.style().StandardPixmap.SP_MediaStop))
-            except Exception as e: print(e)
-        else:
-            self.bus_load_timer.stop() # 停止 Bus Load 更新
-            self.bar_bus_load.setValue(0) # 重置进度条
-            self.lbl_load_val.setText("0.0%") # 重置文字            
+                print("Device connected.")
+                return True
+            except Exception as e:
+                print(f"Connection failed: {e}")
+                self.device = None
+                return False
 
-            # 1. 停止并删除 Python 接收线程
-            if hasattr(self, 'rx_t'):
-                self.rx_t.running = False
-                self.rx_t.wait(2000) # 最多等2秒确保线程退出
-                del self.rx_t# 显式删除引用
-            
-            # 2. 停止设备硬件通讯
+    def _do_disconnect(self):
+        """执行实际的断开与资源释放逻辑"""
+        self.bus_load_timer.stop()
+        self.bar_bus_load.setValue(0)
+        self.lbl_load_val.setText("0.0%")            
+
+        # 1. 停止接收线程
+        if hasattr(self, 'rx_t') and self.rx_t:
+            self.rx_t.running = False
+            self.rx_t.wait(1000)
+            self.rx_t = None
+        
+        # 2. 停止硬件并清理 C++ 对象
+        if self.device:
             try:
                 self.device.stop()
             except:
                 pass
-            
-            # 3. 释放 C++ 对象并强制执行垃圾回收
-            # 这是解决 "Could not open" 的核心
-            self.device = None 
-            import gc
-            gc.collect() # 强迫 Python 立即调用 C++ 析构函数释放 USB 接口
-            
-            # 4. 稍微等待一下，给 libusb 和 OS 一点处理时间
-            import time
-            time.sleep(0.3) 
-            
-            self.act_conn.setIcon(self.style().standardIcon(QApplication.style().StandardPixmap.SP_MediaPlay))            
+            self.device = None
+        
+        import gc
+        gc.collect()
+        time.sleep(0.4) # 给 Windows 驱动一点释放时间
+        
+        self.act_conn.setIcon(self.style().standardIcon(QApplication.style().StandardPixmap.SP_MediaPlay))
+        print("Device disconnected.")
+
+    def toggle_connection(self):
+        if not self.device:
+            if not self.config: self.show_config()
+            if not self.config: return
+            self._do_connect()
+        else:
+            self._do_disconnect()
 
     def on_frames(self, frames):
         now = time.time()
