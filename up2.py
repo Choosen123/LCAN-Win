@@ -20,6 +20,77 @@ LEN_TO_DLC = {0:0, 1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 12:9, 16:10, 20:11, 2
 # 发送可选的长度
 TX_LEN_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64]
 
+class CanError:
+    # --- Error Class (Mask) in can_id ---
+    TX_TIMEOUT   = 0x00000001
+    LOSTARB      = 0x00000002
+    CRTL         = 0x00000004
+    PROT         = 0x00000008
+    TRX          = 0x00000010
+    ACK          = 0x00000020
+    BUSOFF       = 0x00000040
+    BUSERROR     = 0x00000080
+    RESTARTED    = 0x00000100
+
+    # --- Controller Status (data[1]) ---
+    CTRL_MAP = {
+        0x01: "RX Overflow",
+        0x02: "TX Overflow",
+        0x04: "RX Warning",
+        0x08: "TX Warning",
+        0x10: "RX Passive",
+        0x20: "TX Passive",
+        0x40: "Back to Active"
+    }
+
+    # --- Protocol Violation Type (data[2]) ---
+    PROT_TYPE_MAP = {
+        0x01: "Single Bit Error",
+        0x02: "Frame Format Error",
+        0x04: "Bit Stuffing Error",
+        0x08: "Unable to send Dominant (Bit0)",
+        0x10: "Unable to send Recessive (Bit1)",
+        0x20: "Bus Overload",
+        0x40: "Active Error Announcement",
+        0x80: "Error on Transmission"
+    }
+
+    # --- Protocol Violation Location (data[3]) ---
+    PROT_LOC_MAP = {
+        0x03: "Start of Frame",
+        0x02: "ID bits 28-21",
+        0x06: "ID bits 20-18",
+        0x04: "SRTR bit",
+        0x05: "IDE bit",
+        0x07: "ID bits 17-13",
+        0x0F: "ID bits 12-5",
+        0x0E: "ID bits 4-0",
+        0x0C: "RTR bit",
+        0x0D: "Reserved bit 1",
+        0x09: "Reserved bit 0",
+        0x0B: "DLC section",
+        0x0A: "Data section",
+        0x08: "CRC Sequence",
+        0x18: "CRC Delimiter",
+        0x19: "ACK Slot",
+        0x1B: "ACK Delimiter",
+        0x1A: "End of Frame",
+        0x12: "Intermission"
+    }
+
+    # --- Transceiver Status (data[4]) ---
+    TRX_MAP = {
+        0x04: "CANH: No Wire",
+        0x05: "CANH: Short to BAT",
+        0x06: "CANH: Short to VCC",
+        0x07: "CANH: Short to GND",
+        0x40: "CANL: No Wire",
+        0x50: "CANL: Short to BAT",
+        0x60: "CANL: Short to VCC",
+        0x70: "CANL: Short to GND",
+        0x80: "CANL: Short to CANH"
+    }
+
 # --- 2. 垂直侧边标签 (保持原有设计) ---
 class VerticalLabel(QWidget):
     def __init__(self, text, bg_color="#2c3e50"):
@@ -84,6 +155,10 @@ class LCANViewPro(QMainWindow):
         self.tx_timer = QTimer(); self.tx_timer.setTimerType(Qt.TimerType.PreciseTimer); self.tx_timer.timeout.connect(self.process_tx); self.tx_timer.start(1)
         self.bus_load_timer = QTimer()
         self.bus_load_timer.timeout.connect(self.update_bus_load_ui)
+        self.last_tec = 0
+        self.last_rec = 0
+        self.node_state = "ACTIVE"
+        self.global_msg_counter = 0
 
     def apply_style(self):
         self.setStyleSheet("""
@@ -244,6 +319,36 @@ class LCANViewPro(QMainWindow):
             # --- 将 Stretch 放在按钮和 Load 容器之间，使其靠右 ---
             vb_layout.addStretch() 
 
+            # --- Error Status 容器 (放在 Bus Load 左边) ---
+            self.error_status_widget = QWidget()
+            err_lay = QHBoxLayout(self.error_status_widget)
+            err_lay.setContentsMargins(0, 0, 10, 0)
+
+            # 1. 节点状态标签 (Active/Warning/Passive/Bus-Off)
+            self.lbl_node_state = QLabel("IDLE")
+            self.lbl_node_state.setFixedWidth(80)
+            self.lbl_node_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.lbl_node_state.setStyleSheet("""
+                background-color: #7f8c8d; color: white; 
+                border-radius: 3px; font-weight: bold; font-size: 10px;
+            """)
+
+            # 2. TEC/REC 计数器显示
+            self.lbl_counters = QLabel("TEC: 0 | REC: 0")
+            self.lbl_counters.setStyleSheet("color: #bdc3c7; font-family: 'Consolas'; font-size: 11px;")
+
+            # 3. 最近错误描述 (简短显示)
+            self.lbl_last_err = QLabel("")
+            self.lbl_last_err.setStyleSheet("color: #e74c3c; font-size: 11px; font-style: italic;")
+            self.lbl_last_err.setFixedWidth(150) # 限制宽度
+
+            err_lay.addWidget(self.lbl_node_state)
+            err_lay.addWidget(self.lbl_counters)
+            err_lay.addWidget(self.lbl_last_err)
+
+            # 将错误状态挂件添加到 vb_layout (addStretch 之后)
+            vb_layout.addWidget(self.error_status_widget)
+
             load_container = QWidget()
             load_lay = QHBoxLayout(load_container)
             load_lay.setContentsMargins(0, 0, 10, 0) 
@@ -267,7 +372,7 @@ class LCANViewPro(QMainWindow):
             load_lay.addWidget(lbl_load_title)
             load_lay.addWidget(self.bar_bus_load)
             load_lay.addWidget(self.lbl_load_val)
-            
+
             # --- 确保这里使用的是 vb_layout ---
             vb_layout.addWidget(load_container)
 
@@ -275,9 +380,43 @@ class LCANViewPro(QMainWindow):
             if self.device is None:
                 self.bar_bus_load.setValue(0)
                 self.lbl_load_val.setText("0.0%")
+
+                self.lbl_node_state.setText("IDLE")
+                self.lbl_node_state.setStyleSheet("background-color: #7f8c8d; color: white; border-radius: 3px;")
+                self.lbl_counters.setText("TEC: 0 | REC: 0")
+
                 return
 
             try:
+                hw_state = self.device.get_device_status()
+                tec = hw_state.tec
+                rec = hw_state.rec
+                state_code = hw_state.node_state # 0:Act, 1:Warn, 2:Pass, 3:BusOff
+
+                # 2. 更新计数器文字
+                self.lbl_counters.setText(f"TEC: {tec} | REC: {rec}")
+
+                # 3. 更新状态标签和颜色
+                # 定义状态映射
+                states = {
+                    0: ("ACTIVE", "#27ae60"),  # 绿色
+                    1: ("WARNING", "#f1c40f"), # 黄色
+                    2: ("PASSIVE", "#e67e22"), # 橙色
+                    3: ("BUS-OFF", "#e74c3c")  # 红色
+                }
+                
+                text, color = states.get(state_code, ("UNKNOWN", "#7f8c8d"))
+                self.lbl_node_state.setText(text)
+                self.lbl_node_state.setStyleSheet(f"""
+                    background-color: {color}; color: white; 
+                    border-radius: 3px; font-weight: bold;
+                """)
+
+                # 4. 自动清除机制
+                # 如果回到了 ACTIVE 状态且计数器都为 0，清空具体的错误文字描述
+                if state_code == 0 and tec == 0 and rec == 0:
+                    self.lbl_last_err.setText("")
+
                 # 调用 C++ 绑定的 get_bus_load()
                 # 假设返回的是 0-1000 的整数
                 raw_val = self.device.get_bus_load()
@@ -390,11 +529,112 @@ class LCANViewPro(QMainWindow):
             self._do_connect()
         else:
             self._do_disconnect()
+    def insert_new_trace_row(self, timestamp, id_s, len_s, data_s, is_error=False):
+            """
+            统一的 Trace 行插入逻辑
+            """
+            self.global_msg_counter += 1
+            row = self.table_trace.rowCount()
+            
+            # 限制 1000 行
+            if row >= 1000:
+                self.table_trace.removeRow(0)
+                row = 999
+            
+            self.table_trace.insertRow(row)
+            
+            # 创建各项
+            it_idx = QTableWidgetItem(str(self.global_msg_counter))
+            it_time = QTableWidgetItem(f"{timestamp:.4f}")
+            it_id = QTableWidgetItem(id_s)
+            it_len = QTableWidgetItem(len_s)
+            it_data = QTableWidgetItem(data_s)
+
+            # 如果是错误帧，设置红色样式
+            if is_error:
+                it_id.setBackground(QColor("#e74c3c"))
+                it_id.setForeground(QColor("#ffffff"))
+                it_data.setForeground(QColor("#e74c3c"))
+                it_len.setForeground(QColor("#e74c3c"))
+
+            # 填入表格
+            self.table_trace.setItem(row, 0, it_idx)
+            self.table_trace.setItem(row, 1, it_time)
+            self.table_trace.setItem(row, 2, it_id)
+            self.table_trace.setItem(row, 3, it_len)
+            self.table_trace.setItem(row, 4, it_data)
+
+            # 自动滚动
+            self.table_trace.scrollToBottom()
 
     def on_frames(self, frames):
         now = time.time()
         for f in frames:
+            # --- 错误帧处理逻辑 ---
+            if f.get('is_error', False):
+
+                data = f['data']
+                cid = f['can_id']
+                err_details = []
+
+                # 1. 解析 can_id 掩码 (Error Class)
+                if cid & CanError.TX_TIMEOUT: err_details.append("TX Timeout")
+                if cid & CanError.LOSTARB:    err_details.append("Lost Arb")
+                if cid & CanError.CRTL:       err_details.append("Ctrl Error")
+                if cid & CanError.PROT:       err_details.append("Prot Error")
+                if cid & CanError.TRX:        err_details.append("TRX Error")
+                if cid & CanError.ACK:        err_details.append("No ACK")
+                if cid & CanError.BUSOFF:     err_details.append("BUS-OFF")
+                if cid & CanError.BUSERROR:   err_details.append("Bus Error")
+                if cid & CanError.RESTARTED:  err_details.append("Restarted")
+
+                # 2. 解析 data[1] (Controller Status - 位掩码)
+                ctrl_status = data[1]
+                for mask, msg in CanError.CTRL_MAP.items():
+                    if ctrl_status & mask:
+                        err_details.append(msg)
+                
+                # 3. 解析 data[2] (Protocol Violation Type - 位掩码)
+                # 这解决了你提到的 data[2] 缺失问题
+                prot_type = data[2]
+                for mask, msg in CanError.PROT_TYPE_MAP.items():
+                    if prot_type & mask:
+                        err_details.append(msg)
+
+                # 4. 解析 data[3] (Protocol Violation Location - 枚举值)
+                prot_loc_code = data[3]
+                if prot_loc_code in CanError.PROT_LOC_MAP:
+                    err_details.append(f"@{CanError.PROT_LOC_MAP[prot_loc_code]}")
+
+                # 5. 解析 data[4] (Transceiver Status - 位掩码)
+                trx_status = data[4]
+                for mask, msg in CanError.TRX_MAP.items():
+                    if trx_status & mask:
+                        err_details.append(msg)
+
+                # 6. 更新 TEC/REC 计数器 (始终位于 data[6] 和 data[7])
+                if len(data) >= 8:
+                    self.last_tec = data[6]
+                    self.last_rec = data[7]
+
+                # 7. 更新 UI 显示
+                if err_details:
+                    full_msg = " | ".join(err_details)
+                    # 更新状态栏简短描述
+                    self.lbl_last_err.setText(err_details[0]) 
+                    # 将详细错误记录到 Trace 表格，方便回溯
+                    self.add_error_to_trace(f['timestamp'], full_msg, data[6], data[7])
+                
+                # 特殊逻辑：如果是 Back to Active，清空错误文字
+                if ctrl_status & 0x40:
+                    self.lbl_last_err.setText("")
+                
+                continue # 错误帧处理完毕，跳过普通帧逻辑
+
+
             cid = f['can_id']
+
+            
             # 关键修复1：根据 DLC Code 转换实际显示长度，确保 Data 字段完整
             actual_len = DLC_TO_LEN[f['dlc']] if f['dlc'] < 16 else len(f['data'])
             data_s = " ".join(f"{b:02X}" for b in f['data'])
@@ -411,23 +651,129 @@ class LCANViewPro(QMainWindow):
             # 更新 Trace
             tr = self.table_trace.rowCount()
             if tr > 500: self.table_trace.removeRow(0); tr -= 1
-            self.table_trace.insertRow(tr)
+            self.insert_new_trace_row(f['timestamp'], f"{cid:03X}h", str(actual_len), data_s, is_error=False)
             self.table_trace.setItem(tr, 0, QTableWidgetItem(str(tr)))
             self.table_trace.setItem(tr, 1, QTableWidgetItem(f"{f['timestamp']:.4f}"))
             self.table_trace.setItem(tr, 2, QTableWidgetItem(f"{cid:03X}h"))
             self.table_trace.setItem(tr, 3, QTableWidgetItem(str(actual_len)))
             self.table_trace.setItem(tr, 4, QTableWidgetItem(data_s))
 
+    def add_error_to_trace(self, timestamp, msg, tec, rec):
+            """
+            专门用于将错误帧记录到 Trace 表格中
+            """
+            row_count = self.table_trace.rowCount()
+            # 检查最后一行是不是同一个错误
+
+            if row_count > 0:
+                last_row = row_count - 1
+                last_id_item = self.table_trace.item(last_row, 2)
+                last_msg_item = self.table_trace.item(last_row, 4)
+                
+                # 如果上一行也是错误，且描述相同
+                if last_id_item and last_id_item.text() == "CAN ERROR" and \
+                last_msg_item and last_msg_item.text().split(' (')[0] == msg:
+                    
+                    # 仅更新时间、计数器
+                    self.table_trace.setItem(last_row, 1, QTableWidgetItem(f"{timestamp:.4f}"))
+                    self.table_trace.setItem(last_row, 3, QTableWidgetItem(f"T:{tec} R:{rec}"))
+                    # 可以在描述里加个次数统计，例如 "Prot Error (x150)"
+                    return 
+
+            # 如果是新类型的错误或第一条错误，才增加新行
+            self.insert_new_trace_row(timestamp, "CAN ERROR", f"T:{tec} R:{rec}", msg, is_error=True)
+            self.table_trace.scrollToBottom()
+
+    def parse_error_frame(can_id, data):
+        """
+        解析错误帧并返回详细描述列表
+        """
+        details = []
+        
+        # 1. 解析 Error Class (can_id)
+        if can_id & CanError.BUSOFF:
+            details.append("【BUS OFF】节点已脱离总线")
+        if can_id & CanError.ACK:
+            details.append("【ACK Error】无应答(检查接线或节点数量)")
+        if can_id & CanError.TX_TIMEOUT:
+            details.append("【TX Timeout】发送超时")
+        
+        # 2. 解析控制器状态 (data[1])
+        ctrl_status = data[1]
+        for mask, desc in CanError.CTRL_MAP.items():
+            if ctrl_status & mask:
+                details.append(f"控制器状态: {desc}")
+                
+        # 3. 解析协议错误类型 (data[2])
+        prot_type = data[2]
+        for mask, desc in CanError.PROT_TYPE_MAP.items():
+            if prot_type & mask:
+                details.append(f"协议错误: {desc}")
+                
+        # 4. 解析错误发生位置 (data[3])
+        prot_loc_code = data[3]
+        if prot_loc_code in CanError.PROT_LOC_MAP:
+            details.append(f"错误位置: {CanError.PROT_LOC_MAP[prot_loc_code]}")
+            
+        # 5. 解析收发器状态 (data[4])
+        trx_status = data[4]
+        if trx_status in CanError.TRX_MAP:
+            details.append(f"物理层: {CanError.TRX_MAP[trx_status]}")
+            
+        # 6. 错误计数器 (TEC/REC)
+        tec = data[6]
+        rec = data[7]
+        details.append(f"计数器: TEC={tec}, REC={rec}")
+        
+        return details
+
+    def handle_error_frame(self, f):
+        can_id = f['can_id']
+        data = f['data']
+        tec = data[6]
+        rec = data[7]
+        
+        error_msgs = []
+        
+        # 解析 can_id 标记
+        if can_id & 0x40: # CAN_ERR_BUSOFF
+            error_msgs.append("BUS-OFF")
+        if can_id & 0x20: # CAN_ERR_ACK
+            error_msgs.append("ACK Error")
+        
+        # 解析 data[1] (控制器状态)
+        ctrl_err = data[1]
+        if ctrl_err & 0x30: error_msgs.append("Error Passive")
+        elif ctrl_err & 0x0C: error_msgs.append("Error Warning")
+        
+        # 解析 data[2] (协议错误)
+        prot_err = data[2]
+        if prot_err & 0x01: error_msgs.append("Stuff Error")
+        if prot_err & 0x02: error_msgs.append("Form Error")
+        if prot_err & 0x10: error_msgs.append("Bit1 Error")
+        if prot_err & 0x20: error_msgs.append("Bit0 Error")
+
+        msg = " | ".join(error_msgs) if error_msgs else "General Error"
+        
+        # 在 Trace 表格中插入红色的行
+        row = self.table_trace.rowCount()
+        self.table_trace.insertRow(row)
+        item_id = QTableWidgetItem("ERROR")
+        item_id.setBackground(QColor("#e74c3c")) # 红色
+        self.table_trace.setItem(row, 2, item_id)
+        self.table_trace.setItem(row, 4, QTableWidgetItem(f"{msg} (TEC:{tec}, REC:{rec})"))
+
+
     def update_ui(self):
 
-        if self.device:
+        # if self.device:
             # 1. 检查底层 C++ 统计的原始接收总数
-            raw_rx_count = self.device.get_rx_count()
+            # raw_rx_count = self.device.get_rx_count()
             # 2. 检查当前 UI 内存映射里的 ID 数量
-            map_size = len(self.rx_map)
+            # map_size = len(self.rx_map)
             
             # 打印到控制台观察
-            print(f"Raw RX Count: {raw_rx_count}, UI Map Size: {map_size}")
+            # print(f"Raw RX Count: {raw_rx_count}, UI Map Size: {map_size}")
             # self.status.showMessage(f"Total RX: {raw_rx_count} | IDs: {map_size}")
 
         for cid, m in self.rx_map.items():

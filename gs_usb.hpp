@@ -8,13 +8,28 @@
 #include <string>
 #include <sstream>
 
+// CAN错误帧定义
+#define CAN_ERR_FLAG							0x20000000U /* error message frame */
+
+#define CAN_ERR_DLC								8 /* dlc for error message frames */
+
 enum gs_usb_request_type {
-    GS_USB_BREQ_HOST_FORMAT = 0,
-    GS_USB_BREQ_BITTIMING = 1,
-    GS_USB_BREQ_MODE = 2,
-    GS_USB_BREQ_DATA_BITTIMING = 10,
-    GS_USB_BREQ_BERR = 9,
-    GS_USB_BREQ_GET_BUS_LOAD = 15
+	GS_USB_BREQ_HOST_FORMAT = 0,
+	GS_USB_BREQ_BITTIMING,
+	GS_USB_BREQ_MODE,
+	GS_USB_BREQ_BERR,
+	GS_USB_BREQ_BT_CONST,
+	GS_USB_BREQ_DEVICE_CONFIG,
+	GS_USB_BREQ_TIMESTAMP,
+	GS_USB_BREQ_IDENTIFY,
+	GS_USB_BREQ_GET_USER_ID,    //not implemented
+	GS_USB_BREQ_SET_USER_ID,    //not implemented
+	GS_USB_BREQ_DATA_BITTIMING,
+	GS_USB_BREQ_BT_CONST_EXT,
+	GS_USB_BREQ_SET_TERMINATION,
+	GS_USB_BREQ_GET_TERMINATION,
+	GS_USB_BREQ_GET_STATE,
+	GS_USB_BREQ_GET_BUS_LOAD,
 };
 
 enum gs_usb_mode_constants {
@@ -34,6 +49,7 @@ struct CANFrame{
     uint8_t flags;
     std::vector<uint8_t> data;
     double timestamp;
+    bool is_error = false;
     bool is_fd() const { return flags & GS_CAN_FLAG_FD; }
     bool is_brs() const { return flags & GS_CAN_FLAG_BRS; }
 };
@@ -65,6 +81,12 @@ struct BitTimingConfig{
     uint32_t brp;
 };
 
+struct DeviceStatus {
+    uint32_t node_state;
+    uint32_t rec;
+    uint32_t tec;
+};
+
 
 class GsUsb{
 public:
@@ -87,6 +109,7 @@ public:
     static BitTimingConfig CalculateBitTiming(uint32_t bitrate, uint32_t clock_freq = 40000000);
     void SetupCustomBitTiming(const BitTimingConfig& nominal, const BitTimingConfig& data);
     int GetBusLoad();
+    DeviceStatus GetDeviceStatus();
 
 private:
     libusb_context* ctx = nullptr;

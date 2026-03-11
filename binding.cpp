@@ -14,6 +14,7 @@ struct PyCANFrame {
     double timestamp;
     bool is_fd;
     bool is_brs;
+    bool is_error;
     
     PyCANFrame(const CANFrame& frame) 
         : can_id(frame.can_id)
@@ -21,6 +22,7 @@ struct PyCANFrame {
         , flags(frame.flags)
         , data(reinterpret_cast<const char*>(frame.data.data()), frame.data.size())
         , timestamp(frame.timestamp)
+        , is_error(frame.is_error)
         , is_fd(frame.is_fd())
         , is_brs(frame.is_brs())
     {}
@@ -34,6 +36,7 @@ struct PyCANFrame {
         d["timestamp"] = timestamp;
         d["is_fd"] = is_fd;
         d["is_brs"] = is_brs;
+        d["is_error"] = is_error;
         return d;
     }
 };
@@ -101,6 +104,11 @@ public:
         return device_->GetBusLoad(); // 调用 gs_usb.cpp 中的底层方法
     }
     
+    DeviceStatus get_device_status() {
+        py::gil_scoped_release release;
+        return device_->GetDeviceStatus();
+    }
+
     uint64_t get_rx_count() const {
         return device_->GetRxCount();
     }
@@ -117,6 +125,11 @@ public:
 // 模块定义
 PYBIND11_MODULE(gs_usb, m) {
     m.doc() = "GS_USB CAN FD interface module";
+
+    py::class_<DeviceStatus>(m, "DeviceStatus")
+        .def_readwrite("tec", &DeviceStatus::tec)
+        .def_readwrite("rec", &DeviceStatus::rec)
+        .def_readwrite("node_state", &DeviceStatus::node_state);
 
     py::class_<USBDeviceInfo>(m, "USBDeviceInfo")
         .def_readonly("vid", &USBDeviceInfo::vid)
@@ -189,6 +202,9 @@ PYBIND11_MODULE(gs_usb, m) {
 
         .def("get_bus_load", &PyGsUsb::get_bus_load, 
              "Get current Bus Load from hardware (0-1000, representing 0.0%-100.0%)")
+
+        .def("get_device_status", &PyGsUsb::get_device_status,
+             "Get current device status including TEC, REC, and node state")
 
         .def("get_rx_count", &PyGsUsb::get_rx_count,
              "Get total received frame count")

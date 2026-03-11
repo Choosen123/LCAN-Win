@@ -243,28 +243,50 @@ void GsUsb::ReceiveLoop(){
                 reserved = buffer[11];
 
                 if(echo_id == 0xFFFFFFFF){
-                    // 接收帧
-                    CANFrame frame;
-                    frame.can_id = can_id & 0x1FFFFFFF;
-                    frame.dlc = dlc;
-                    frame.flags = flags;
-                    frame.timestamp = GetTimestamp();
-                    frame.data.assign(buffer + 12, buffer + 12 + DlcCodeToLen(dlc));
-                
-                    {
-                        std::lock_guard<std::mutex> lock(rx_queue_mutex);
-                        if(rx_queue.size() < MAX_QUEUE_SIZE) { // 限制队列大小，防止内存占用过高
-                            rx_queue.push(frame);
-                            rx_count.fetch_add(1);
-                        }else{
-                            std::cerr << "Receive queue full, dropping frame." << std::endl;
+                    if(can_id & CAN_ERR_FLAG){
+                        std::cerr << "Error frame received with CAN ID: " << std::hex << can_id << std::dec << std::endl;
+                    
+                        // 错误帧
+                        CANFrame error_frame;
+                        error_frame.can_id = can_id & 0x1FFFFFFF;
+                        error_frame.dlc = dlc;
+                        error_frame.flags = flags;
+                        error_frame.timestamp = GetTimestamp();
+                        error_frame.data.assign(buffer + 12, buffer + 12 + DlcCodeToLen(dlc));
+                        error_frame.is_error = true;
+
+                        {
+                            std::lock_guard<std::mutex> lock(rx_queue_mutex);
+                            if(rx_queue.size() < MAX_QUEUE_SIZE) { // 限制队列大小，防止内存占用过高
+                                rx_queue.push(error_frame);
+                                rx_count.fetch_add(1);
+                            }else{
+                                std::cerr << "Receive queue full, dropping error frame." << std::endl;
+                            }
+                        }
+
+                    }else{
+                        // 接收帧
+                        CANFrame frame;
+                        frame.can_id = can_id & 0x1FFFFFFF;
+                        frame.dlc = dlc;
+                        frame.flags = flags;
+                        frame.timestamp = GetTimestamp();
+                        frame.data.assign(buffer + 12, buffer + 12 + DlcCodeToLen(dlc));
+                    
+                        {
+                            std::lock_guard<std::mutex> lock(rx_queue_mutex);
+                            if(rx_queue.size() < MAX_QUEUE_SIZE) { // 限制队列大小，防止内存占用过高
+                                rx_queue.push(frame);
+                                rx_count.fetch_add(1);
+                            }else{
+                                std::cerr << "Receive queue full, dropping frame." << std::endl;
+                            }
                         }
                     }
-                }else if(echo_id == 0x00000001){
-                    // 发送回显
                 }else{
-                    // 未知帧类型
-                    std::cerr << "Unknown frame type received with echo_id: " << std::hex << echo_id << std::dec << std::endl;
+                    // 发送回显
+                    std::cout << "Echo TX for CAN ID: " << std::hex << can_id << std::dec << " DLC: " << static_cast<int>(dlc) << " Flags: " << static_cast<int>(flags) << std::endl;
                 }
 
 
@@ -557,4 +579,25 @@ int GsUsb::GetBusLoad(){
     }
 
     return (ret == 2) ? bus_load_raw : -1; // 成功返回总线负载值，否则返回-1
+}
+
+DeviceStatus GsUsb::GetDeviceStatus(){
+    DeviceStatus device_status;
+
+    int ret = libusb_control_transfer(
+        dev_handle, 
+        0xC1, 
+        GS_USB_BREQ_GET_STATE, 
+        0, 
+        interface_number, 
+        reinterpret_cast<uint8_t*>(&device_status), 
+        sizeof(DeviceStatus),
+        100
+    );
+
+    if(ret != sizeof(DeviceStatus)) {
+        std::cerr << "Failed to get device status." << ret << std::endl;
+        throw std::runtime_error("Failed to get device status.");
+    }
+    return device_status;
 }
