@@ -568,7 +568,6 @@ class LCANViewPro(QMainWindow):
             self.table_trace.scrollToBottom()
 
     def on_frames(self, frames):
-        now = time.time()
         for f in frames:
             # --- 错误帧处理逻辑 ---
             if f.get('is_error', False):
@@ -633,7 +632,7 @@ class LCANViewPro(QMainWindow):
 
 
             cid = f['can_id']
-
+            current_ts = f['timestamp']
             
             # 关键修复1：根据 DLC Code 转换实际显示长度，确保 Data 字段完整
             actual_len = DLC_TO_LEN[f['dlc']] if f['dlc'] < 16 else len(f['data'])
@@ -642,10 +641,24 @@ class LCANViewPro(QMainWindow):
             if cid not in self.rx_map:
                 r = self.table_rx.rowCount(); self.table_rx.insertRow(r)
                 for i in range(6): self.table_rx.setItem(r, i, QTableWidgetItem(""))
-                self.rx_map[cid] = {"row": r, "cnt": 0, "pts": now}
+                self.rx_map[cid] = {"row": r, "cnt": 0, "pts": current_ts, "cyc":0}
             
             m = self.rx_map[cid]
-            m['cnt'] += 1; m['cyc'] = (now - m['pts'])*1000 if m['cnt'] > 1 else 0; m['pts'] = now
+            m['cnt'] += 1;
+            # --- 核心计算逻辑 ---
+            if m['cnt'] > 1:
+                # 计算两次时间戳的差值（秒转毫秒）
+                delta_ms = (current_ts - m['pts']) * 1000
+                
+                # 为了防止数值剧烈抖动，可以使用简单的加权平均（平滑滤波）
+                # 如果不需要滤波，直接 m['cyc'] = delta_ms
+                if delta_ms > 0:
+                    m['cyc'] = (m['cyc'] * 0.7) + (delta_ms * 0.3)
+                else:
+                    # 如果 delta 是 0（极高频），可以维持原值或设置极小值
+                    pass
+
+            m['pts'] = current_ts
             m['data'] = data_s; m['len'] = actual_len; m['is_fd'] = f['is_fd']
 
             # 更新 Trace
