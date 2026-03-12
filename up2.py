@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QTableView
 )
 from PyQt6.QtCore import QTimer, Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QColor, QFont, QAction, QPainter, QIcon
+from PyQt6.QtGui import QColor, QFont, QAction, QPainter, QIcon, QPalette
 from PyQt6.QtCore import QAbstractTableModel, QVariant, Qt
 
 import gs_usb 
@@ -209,13 +209,46 @@ class LCANViewPro(QMainWindow):
 
     def apply_style(self):
         self.setStyleSheet("""
-            QMainWindow { background-color: #f0f0f0; }
-            #ViewSelectorBar { background-color: #34495e; min-height: 40px; }
-            QPushButton#TabButton { background-color: transparent; color: #ecf0f1; border: none; padding: 8px 20px; font-size: 12px; margin-top: 5px; }
-            QPushButton#TabButton[active="true"] { background-color: #fff5d7; color: #2c3e50; font-weight: bold; border-top-left-radius: 4px; border-top-right-radius: 4px; }
-            QTableWidget { gridline-color: #dcdcdc; font-family: 'Consolas'; font-size: 10pt; }
-            QHeaderView::section { background-color: #f2f2f2; font-weight: bold; border: 1px solid #dcdcdc; }
+            QMainWindow, QDialog { background-color: #f5f6f7; color: #333333; }
+            
+            #ViewSelectorBar { background-color: #2c3e50; min-height: 45px; }
+            
+            QPushButton#TabButton { 
+                color: #bdc3c7; border: none; padding: 10px 25px; font-size: 13px;
+            }
+            QPushButton#TabButton[active="true"] { 
+                color: #ffffff; background-color: #34495e; font-weight: bold;
+            }
+            
+            QTableView, QTableWidget {
+                background-color: #ffffff; color: #2c3e50;
+                gridline-color: #ecf0f1; border: 1px solid #dcdcdc;
+                font-family: 'Consolas'; font-size: 10pt;
+                selection-background-color: #3498db; selection-color: white;
+            }
+            
+            /* 隔行变色效果需要在代码里开启 setAlternatingRowColors(True) */
+            QTableView { alternate-background-color: #f9fbfd; }
+            
+            QHeaderView::section {
+                background-color: #ebf2f9; color: #2980b9;
+                padding: 6px; border: 1px solid #d6eaf8; font-weight: bold;
+            }
+            
+            /* Bus Load 进度条美化 */
+            QProgressBar {
+                border: 1px solid #bdc3c7; background-color: #ecf0f1; border-radius: 3px; text-align: center;
+            }
+            QProgressBar::chunk { background-color: #3498db; width: 20px; }
         """)
+        # self.setStyleSheet("""
+        #     QMainWindow { background-color: #f0f0f0; }
+        #     #ViewSelectorBar { background-color: #34495e; min-height: 40px; }
+        #     QPushButton#TabButton { background-color: transparent; color: #ecf0f1; border: none; padding: 8px 20px; font-size: 12px; margin-top: 5px; }
+        #     QPushButton#TabButton[active="true"] { background-color: #fff5d7; color: #2c3e50; font-weight: bold; border-top-left-radius: 4px; border-top-right-radius: 4px; }
+        #     QTableWidget { gridline-color: #dcdcdc; font-family: 'Consolas'; font-size: 10pt; }
+        #     QHeaderView::section { background-color: #f2f2f2; font-weight: bold; border: 1px solid #dcdcdc; }
+        # """)
 
     def init_ui(self):
             central = QWidget(); self.setCentralWidget(central)
@@ -856,6 +889,32 @@ class ReceiveThread(QThread):
                 if f: self.frames_signal.emit(f)
             self.msleep(10)
 
+def set_light_theme(app):
+    # 强制使用 Fusion 样式，它对调色板的响应最准确
+    app.setStyle("Fusion")
+    
+    # 创建一个浅色调色板
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(240, 240, 240))
+    palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.black)
+    palette.setColor(QPalette.ColorRole.Base, Qt.GlobalColor.white)
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(233, 231, 227))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.white)
+    palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.black)
+    palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.black)
+    palette.setColor(QPalette.ColorRole.Button, QColor(240, 240, 240))
+    palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.black)
+    palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
+    palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
+    palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
+    
+    # 应用调色板
+    app.setPalette(palette)
+
 if __name__ == "__main__":
-    a = QApplication(sys.argv); a.setStyle("Fusion")
+    a = QApplication(sys.argv); 
+    set_light_theme(a) # 应用浅色主题 
+
+    # a.setStyle("Fusion")
     w = LCANViewPro(); w.show(); sys.exit(a.exec())
