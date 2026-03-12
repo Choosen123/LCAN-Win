@@ -4,7 +4,7 @@
 a = Analysis(
     ['up2.py'],
     pathex=[],
-    binaries=[('gs_usb.cp314-mingw_x86_64_ucrt_gnu.pyd', '.'), ('libusb-1.0.dll', '.')],
+    binaries=[('gs_usb.cp314-mingw_x86_64_ucrt_gnu.pyd', '.'), ('C:/msys64/ucrt64/bin/libusb-1.0.dll', '.')],
     datas=[],
     hiddenimports=[],
     hookspath=[],
