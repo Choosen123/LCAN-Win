@@ -26,12 +26,18 @@ jobs:
 
       - name: Build EXE with Nuitka
         run: |
-          python -m nuitka --standalone --onefile ^
+          python -m nuitka ^
+            --standalone ^
+            --onefile ^
             --enable-plugin=pyqt6 ^
             --windows-console-mode=disable ^
+            --output-dir="dist" ^
+            --remove-output ^
+            --jobs=4 ^
+            --assume-yes-for-downloads ^
             --output-filename="LCAN-View_${{ github.ref_name }}.exe" ^
             --windows-icon-from-ico="LCAN-View.ico" ^
-            --assume-yes-for-downloads ^
+            --follow-imports ^
             up2.py
 
       - name: Create Release in Public Repo
