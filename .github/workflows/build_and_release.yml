@@ -85,6 +85,7 @@ jobs:
           # 这里的 URL 构造逻辑要与上面打包的文件名对应
           python <<EOF
           import json
+          import os
           new_version = "${{ github.ref_name }}".replace('v', '')
           changelog = os.getenv('RAW_CHANGELOG', 'No changelog available.')
           download_url = f"https://github.com/${PUBLIC_REPO}/releases/download/${{ github.ref_name }}/LCAN-View_${{ github.ref_name }}.exe"
