@@ -3,6 +3,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 
 import requests
 from PyQt6.QtCore import (
@@ -32,6 +33,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QProgressDialog,
     QPushButton,
     QRadioButton,
     QSplitter,
@@ -47,7 +49,7 @@ from PyQt6.QtWidgets import (
 
 from libs import gs_usb
 
-CURRENT_VERSION = "1.1.1"
+CURRENT_VERSION = "1.1.2"
 
 
 def parse_version(version_text):
@@ -62,6 +64,23 @@ def is_remote_newer(remote_version, current_version):
     remote_parts += (0,) * (max_len - len(remote_parts))
     current_parts += (0,) * (max_len - len(current_parts))
     return remote_parts > current_parts
+
+
+def show_update_detail(
+    parent_window,
+    title,
+    text,
+    detail="",
+    icon=QMessageBox.Icon.Information,
+):
+    box = QMessageBox(parent_window)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setIcon(icon)
+    if detail:
+        box.setDetailedText(detail)
+    box.setStandardButtons(QMessageBox.StandardButton.Ok)
+    box.exec()
 
 
 #
@@ -188,40 +207,145 @@ def check_update(parent_window):
             )
 
             if reply == QMessageBox.StandardButton.Yes:
-                download_and_install(download_url)
+                download_and_install(parent_window, download_url, remote_version)
+        else:
+            show_update_detail(
+                parent_window,
+                "检查更新",
+                f"当前已是最新版本：{CURRENT_VERSION}",
+            )
     except Exception as e:
-        print(f"检查更新失败: {e}")
+        show_update_detail(
+            parent_window,
+            "检查更新失败",
+            f"无法获取更新信息：{e}",
+            traceback.format_exc(),
+            QMessageBox.Icon.Warning,
+        )
 
 
-def download_and_install(download_url):
+def is_running_as_exe():
+    # 1. Nuitka 编译后的标准标识
+    if "__compiled__" in globals():
+        return True
+    # 2. 兼容 PyInstaller 的标识
+    if getattr(sys, "frozen", False):
+        return True
+    # 3. 兜底方案：检查 sys.executable 是否包含 python.exe
+    # 如果是编译后的 EXE，sys.executable 指向的是你的 EXE 文件名
+    if "python.exe" not in sys.executable.lower():
+        return True
+
+    return False
+
+
+def download_and_install(parent_window, download_url, remote_version):
+    if not is_running_as_exe():
+        show_update_detail(
+            parent_window,
+            "更新提示",
+            "当前为开发模式运行（python up2.py），为避免误替换 Python 解释器，已阻止自更新。",
+            "请使用打包后的 EXE 版本进行在线更新。",
+            QMessageBox.Icon.Warning,
+        )
+        return
+
     # 1. 下载新文件为 temp_update.exe
-    print("正在下载更新...")
-    r = requests.get(download_url, stream=True, timeout=30)
-    r.raise_for_status()
+    progress = QProgressDialog("正在下载更新...", "取消", 0, 100, parent_window)
+    progress.setWindowTitle("下载更新")
+    progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
 
-    base_dir = os.path.dirname(os.path.abspath(sys.executable))
-    new_exe = os.path.join(base_dir, "temp_update.exe")
+    try:
+        r = requests.get(download_url, stream=True, timeout=30)
+        r.raise_for_status()
 
-    with open(new_exe, "wb") as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
+        base_dir = os.path.dirname(os.path.abspath(sys.executable))
+        new_exe = os.path.join(base_dir, "temp_update.exe")
 
-    # 2. 调用外部脚本进行替换并重启
-    start_upgrade_script(new_exe)
+        total_size = int(r.headers.get("content-length", 0) or 0)
+        if total_size <= 0:
+            progress.setRange(0, 0)
+
+        downloaded = 0
+        with open(new_exe, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if progress.wasCanceled():
+                    f.close()
+                    try:
+                        os.remove(new_exe)
+                    except OSError:
+                        pass
+                    show_update_detail(
+                        parent_window,
+                        "更新已取消",
+                        "你已取消下载，未执行更新。",
+                    )
+                    return
+
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        percent = int(downloaded * 100 / total_size)
+                        progress.setValue(max(0, min(100, percent)))
+                    QApplication.processEvents()
+
+        progress.setValue(100)
+
+        detail_text = (
+            f"新版本: {remote_version}\n"
+            f"下载地址: {download_url}\n"
+            f"下载文件: {new_exe}\n\n"
+            "点击“是”后将关闭当前程序并执行替换更新。"
+        )
+        reply = QMessageBox.question(
+            parent_window,
+            "下载完成",
+            f"更新包已下载完成（版本 {remote_version}），是否现在安装？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            start_upgrade_script(new_exe)
+        else:
+            show_update_detail(
+                parent_window,
+                "稍后安装",
+                "你选择了稍后安装，更新包已保留在程序目录。",
+                detail_text,
+            )
+    except Exception as e:
+        show_update_detail(
+            parent_window,
+            "下载更新失败",
+            f"下载过程中发生错误：{e}",
+            traceback.format_exc(),
+            QMessageBox.Icon.Warning,
+        )
+    finally:
+        progress.close()
 
 
 def start_upgrade_script(new_exe_path):
-    # 获取当前正在运行的 EXE 路径
-    current_exe = sys.executable
-    backup_exe = current_exe + ".bak"
-    updater_bat = os.path.join(os.path.dirname(current_exe), "updater.bat")
+    import os
+    import subprocess
+    import sys
 
-    # 创建一个简单的批处理文件来替换自己
-    # 逻辑：等主程序退出 -> 删除旧的 -> 重命名新的 -> 启动新的 -> 删除脚本自己
-    bat_content = f"""
-@echo off
-setlocal
+    # 获取当前运行的 EXE 路径并处理路径（确保引号安全）
+    current_exe = os.path.abspath(sys.executable)
+    # 获取目录
+    exe_dir = os.path.dirname(current_exe)
+    backup_exe = current_exe + ".bak"
+    updater_bat = os.path.join(exe_dir, "updater.bat")
+
+    # 编写批处理内容
+    # 增加 chcp 65001 以支持 UTF-8（或者干脆把中文删掉改英文）
+    # 给所有路径变量加上双引号
+    bat_content = f"""@echo off
+chcp 65001 > nul
+echo 正在等待程序退出并覆盖新版本...
+
 set "TARGET={current_exe}"
 set "NEWFILE={new_exe_path}"
 set "BACKUP={backup_exe}"
@@ -229,10 +353,12 @@ set /a RETRY=0
 
 :wait_unlock
 set /a RETRY+=1
-if %RETRY% GTR 15 goto fail
+if %RETRY% GTR 20 goto fail
 
+:: 尝试删除旧备份
 if exist "%BACKUP%" del /f /q "%BACKUP%" >nul 2>&1
 
+:: 尝试将当前正在运行的 EXE 重命名为备份（这是 Windows 替换正在运行文件的技巧）
 if exist "%TARGET%" (
     move /y "%TARGET%" "%BACKUP%" >nul 2>&1
     if errorlevel 1 (
@@ -241,32 +367,50 @@ if exist "%TARGET%" (
     )
 )
 
+:: 移动新下载的文件到目标位置
 move /y "%NEWFILE%" "%TARGET%" >nul 2>&1
 if errorlevel 1 goto rollback
 
+:: 启动更新后的程序
 start "" "%TARGET%"
+
+:: 清理并退出
+echo 更新成功！
 if exist "%BACKUP%" del /f /q "%BACKUP%" >nul 2>&1
-del "%~f0"
+(goto) 2>nul & del "%~f0"
 exit /b 0
 
 :rollback
 if exist "%BACKUP%" move /y "%BACKUP%" "%TARGET%" >nul 2>&1
-echo 更新失败，已回滚到旧版本。
+echo 更新失败，已回滚。
 pause
 exit /b 1
 
 :fail
-echo 等待旧程序退出超时，更新取消。
+echo 更新超时：请确保程序已完全关闭。
 pause
 exit /b 1
-    """
+"""
 
+    # 1. 使用 utf-8 写入（配合脚本开头的 chcp 65001）
     with open(updater_bat, "w", encoding="utf-8") as f:
         f.write(bat_content)
 
-    # 后台运行批处理并立即退出主程序
-    subprocess.Popen(f'"{updater_bat}"', shell=True)
-    sys.exit(0)
+    # 2. 关键点：使用特殊的启动参数，确保 .bat 完全脱离主程序运行
+    # CREATE_NO_WINDOW = 0x08000000 (不显示黑窗口)
+    # 如果你想调试，可以去掉 creationflags 参数
+    try:
+        if sys.platform == "win32":
+            # 使用 cmd /c 启动
+            subprocess.Popen(
+                f'cmd.exe /c "{updater_bat}"',
+                shell=True,
+                cwd=exe_dir,
+                creationflags=subprocess.CREATE_NEW_CONSOLE,  # 调试用：弹出一个新黑窗口看进度
+            )
+        sys.exit(0)
+    except Exception as e:
+        print(f"无法启动更新脚本: {e}")
 
 
 class TraceModel(QAbstractTableModel):
