@@ -1,6 +1,10 @@
 build/
 .cache/
 .vscode/
+.packaging/
 dist/
 *.rar
 *.spec
+*.log
+*.dist/
+*.build/

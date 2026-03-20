@@ -14,10 +14,11 @@ add_executable(test main.cpp)
 target_link_libraries(test PRIVATE gs_usb_lib)
 
 set(PYBIND11_FINDPYTHON ON)
-find_package(Python 3.14 COMPONENTS Interpreter Development REQUIRED)
+find_package(Python 3.13 COMPONENTS Interpreter Development REQUIRED)
 find_package(pybind11 REQUIRED)
 
 pybind11_add_module(gs_usb binding.cpp)
+set_target_properties(gs_usb PROPERTIES PREFIX "" SUFFIX ".pyd")
 target_link_libraries(gs_usb PRIVATE gs_usb_lib Python::Module)
 target_include_directories(gs_usb PRIVATE C:/msys64/ucrt64/include)
 
