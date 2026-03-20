@@ -1,85 +1,95 @@
 @echo off
 chcp 65001 >nul
-set "BASE_NAME=LCAN-View"
+setlocal enabledelayedexpansion
 
-:ask_version
-set "APP_VERSION="
-set /p APP_VERSION=请输入版本号（例如 3.0.1）:
-if "%APP_VERSION%"=="" (
-    echo [提示] 版本号不能为空，请重新输入。
-    goto ask_version
-)
-set "APP_VERSION=%APP_VERSION: =_%"
-set "EXE_NAME=%BASE_NAME%_v%APP_VERSION%"
+:: ================= 配置区 =================
+set "BASE_NAME=LCAN-View"
+set "EXE_NAME=%BASE_NAME%"
+
+:: 路径配置
 set "PKG_ROOT=.packaging"
 set "DIST_DIR=%PKG_ROOT%\dist"
-set "NUITKA_BUILD_DIR=%PKG_ROOT%\nuitka_build"
+set "PYI_WORK_DIR=%PKG_ROOT%\build"
+set "SPEC_DIR=%PKG_ROOT%"
+set "SPEC_FILE=%SPEC_DIR%\%EXE_NAME%.spec"
+set "FINAL_OUTPUT_EXE=%PKG_ROOT%\%EXE_NAME%.exe"
+
+:: 依赖项路径 (请确保这些文件路径正确)
+set "PYD_PATH=../libs/gs_usb.pyd"
+set "USB_DLL_PATH=../libs/libusb-1.0.dll"
+set "ICON_PATH=../LCAN-View.ico"
+:: ==========================================
 
 echo ====================================
-echo LCAN-View 自动打包脚本
+echo %BASE_NAME% 自动打包脚本 (One-File 模式)
 echo ====================================
 echo.
 
-:: 清理旧文件
-echo [信息] 正在清理旧文件...
-if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
-if exist "%NUITKA_BUILD_DIR%" rmdir /s /q "%NUITKA_BUILD_DIR%"
-if exist "%PKG_ROOT%\up2.build" rmdir /s /q "%PKG_ROOT%\up2.build"
-if exist "%PKG_ROOT%\up2.dist" rmdir /s /q "%PKG_ROOT%\up2.dist"
-if exist "%PKG_ROOT%\up2.onefile-build" rmdir /s /q "%PKG_ROOT%\up2.onefile-build"
-if not exist "%PKG_ROOT%" mkdir "%PKG_ROOT%"
-
-:: 检查是否安装了nuitka
-python -m pip show nuitka >nul 2>&1
-if errorlevel 1 (
-    echo [错误] 未找到 nuitka，正在安装...
-    python -m pip install nuitka
-    if errorlevel 1 (
-        echo [错误] 安装 nuitka 失败！
-        pause
-        exit /b 1
-    )
+:: 初始化环境/清理旧文件
+echo [信息] 正在初始化环境...
+if exist "%PKG_ROOT%" (
+    :: 尝试删除旧的 build/dist，但不删除根目录以防里面有其他重要文件
+    if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
+    if exist "%PYI_WORK_DIR%" rmdir /s /q "%PYI_WORK_DIR%"
+    if exist "%SPEC_FILE%" del /f /q "%SPEC_FILE%"
+    if exist "%FINAL_OUTPUT_EXE%" del /f /q "%FINAL_OUTPUT_EXE%"
+) else (
+    mkdir "%PKG_ROOT%"
 )
 
-:: onefile 推荐依赖（可选）
-python -m pip show zstandard >nul 2>&1
+:: 检查 pyinstaller
+python -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 (
-    echo [信息] 未找到 zstandard，正在安装以提升 onefile 构建体验...
-    python -m pip install zstandard >nul 2>&1
+    echo [错误] 未找到 pyinstaller，正在安装...
+    python -m pip install pyinstaller
 )
 
-echo [信息] 开始使用 Nuitka 构建 LCAN-View...
-echo [信息] 输出文件名: %EXE_NAME%.exe
-echo [信息] 打包目录: %PKG_ROOT%
+echo [信息] 开始使用 PyInstaller 构建...
+echo [信息] 目标: %FINAL_OUTPUT_EXE%
 echo.
 
-:: 执行 Nuitka 构建（含编译级保护/混淆）
-python -m nuitka ^
-  --standalone ^
-  --onefile ^
-  --enable-plugin=pyqt6 ^
-  --windows-console-mode=disable ^
-  --output-dir="%PKG_ROOT%" ^
-  --remove-output ^
-  --jobs=4 ^
-  --assume-yes-for-downloads ^
-  --report="%PKG_ROOT%\nuitka-report.xml" ^
-  --output-filename="%EXE_NAME%.exe" ^
-  --windows-icon-from-ico="LCAN-View.ico" ^
-  --follow-imports ^
-  up2.py
+:: 执行构建
+:: 注意: --onefile 模式会将所有内容打包进一个 exe
+pyinstaller --noconsole ^
+    --onefile ^
+    --name "%EXE_NAME%" ^
+    --icon="%ICON_PATH%" ^
+    --add-binary "%PYD_PATH%;." ^
+    --add-binary "%USB_DLL_PATH%;." ^
+    --distpath "%DIST_DIR%" ^
+    --workpath "%PYI_WORK_DIR%" ^
+    --specpath "%SPEC_DIR%" ^
+    --clean ^
+    up2.py
 
 if errorlevel 1 (
     echo.
-    echo [错误] Nuitka 构建失败！
+    echo [错误] 构建失败！
     pause
     exit /b 1
 )
 
+:: 后处理：只保留最终的 EXE
 echo.
-echo ====================================
-echo [完成] 打包成功！
-echo 可执行文件位于: %DIST_DIR%\%EXE_NAME%.exe
-echo ====================================
+echo [信息] 正在执行后期清理...
+
+if exist "%DIST_DIR%\%EXE_NAME%.exe" (
+    :: 1. 将 exe 移动到 packaging 根目录
+    move /y "%DIST_DIR%\%EXE_NAME%.exe" "%FINAL_OUTPUT_EXE%" >nul
+
+    :: 2. 删除临时文件夹和 spec 文件
+    if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
+    if exist "%PYI_WORK_DIR%" rmdir /s /q "%PYI_WORK_DIR%"
+    if exist "%SPEC_FILE%" del /f /q "%SPEC_FILE%"
+
+    echo ====================================
+    echo [完成] 打包成功！
+    echo 最终文件: %FINAL_OUTPUT_EXE%
+    echo 临时构建文件已全部清理。
+    echo ====================================
+) else (
+    echo [错误] 找不到生成的可执行文件！
+)
+
 echo.
 pause
