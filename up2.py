@@ -1,7 +1,10 @@
+import subprocess
 import sys
 import time
+import os
+import re
 
-import gs_usb
+import requests
 from PyQt6.QtCore import (
     QAbstractTableModel,
     QSize,
@@ -27,6 +30,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QRadioButton,
@@ -41,6 +45,26 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from libs import gs_usb
+
+CURRENT_VERSION = "1.1.0"
+
+
+def parse_version(version_text):
+    nums = [int(x) for x in re.findall(r"\d+", str(version_text))]
+    return tuple(nums) if nums else (0,)
+
+
+def is_remote_newer(remote_version, current_version):
+    remote_parts = parse_version(remote_version)
+    current_parts = parse_version(current_version)
+    max_len = max(len(remote_parts), len(current_parts))
+    remote_parts += (0,) * (max_len - len(remote_parts))
+    current_parts += (0,) * (max_len - len(current_parts))
+    return remote_parts > current_parts
+
+
+#
 # --- 1. DLC 与 长度的转换常量 ---
 # DLC Code -> 实际字节长度
 DLC_TO_LEN = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64]
@@ -137,6 +161,112 @@ class CanError:
         0x70: "CANL: Short to GND",
         0x80: "CANL: Short to CANH",
     }
+
+
+def check_update(parent_window):
+    # 1. 访问公开仓库中的 version.json
+    json_url = "https://raw.githubusercontent.com/Choosen123/LCAN-View-Release/main/version.json"
+
+    try:
+        response = requests.get(json_url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        remote_version = str(data.get("version", "")).strip()
+        download_url = str(data.get("url", "")).strip()
+        changelog = str(data.get("changelog", "暂无更新说明"))
+
+        if not remote_version or not download_url:
+            print("更新信息格式错误: 缺少 version 或 url")
+            return
+
+        if is_remote_newer(remote_version, CURRENT_VERSION):
+            reply = QMessageBox.question(
+                parent_window,
+                "发现新版本",
+                f"当前版本: {CURRENT_VERSION}\n最新版本: {remote_version}\n\n更新内容:\n{changelog}\n\n是否立即下载更新？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                download_and_install(download_url)
+    except Exception as e:
+        print(f"检查更新失败: {e}")
+
+
+def download_and_install(download_url):
+    # 1. 下载新文件为 temp_update.exe
+    print("正在下载更新...")
+    r = requests.get(download_url, stream=True, timeout=30)
+    r.raise_for_status()
+
+    base_dir = os.path.dirname(os.path.abspath(sys.executable))
+    new_exe = os.path.join(base_dir, "temp_update.exe")
+
+    with open(new_exe, "wb") as f:
+        for chunk in r.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+
+    # 2. 调用外部脚本进行替换并重启
+    start_upgrade_script(new_exe)
+
+
+def start_upgrade_script(new_exe_path):
+    # 获取当前正在运行的 EXE 路径
+    current_exe = sys.executable
+    backup_exe = current_exe + ".bak"
+    updater_bat = os.path.join(os.path.dirname(current_exe), "updater.bat")
+
+    # 创建一个简单的批处理文件来替换自己
+    # 逻辑：等主程序退出 -> 删除旧的 -> 重命名新的 -> 启动新的 -> 删除脚本自己
+    bat_content = f"""
+@echo off
+setlocal
+set "TARGET={current_exe}"
+set "NEWFILE={new_exe_path}"
+set "BACKUP={backup_exe}"
+set /a RETRY=0
+
+:wait_unlock
+set /a RETRY+=1
+if %RETRY% GTR 15 goto fail
+
+if exist "%BACKUP%" del /f /q "%BACKUP%" >nul 2>&1
+
+if exist "%TARGET%" (
+    move /y "%TARGET%" "%BACKUP%" >nul 2>&1
+    if errorlevel 1 (
+        timeout /t 1 /nobreak >nul
+        goto wait_unlock
+    )
+)
+
+move /y "%NEWFILE%" "%TARGET%" >nul 2>&1
+if errorlevel 1 goto rollback
+
+start "" "%TARGET%"
+if exist "%BACKUP%" del /f /q "%BACKUP%" >nul 2>&1
+del "%~f0"
+exit /b 0
+
+:rollback
+if exist "%BACKUP%" move /y "%BACKUP%" "%TARGET%" >nul 2>&1
+echo 更新失败，已回滚到旧版本。
+pause
+exit /b 1
+
+:fail
+echo 等待旧程序退出超时，更新取消。
+pause
+exit /b 1
+    """
+
+    with open(updater_bat, "w", encoding="utf-8") as f:
+        f.write(bat_content)
+
+    # 后台运行批处理并立即退出主程序
+    subprocess.Popen(f'"{updater_bat}"', shell=True)
+    sys.exit(0)
 
 
 class TraceModel(QAbstractTableModel):
@@ -411,6 +541,18 @@ class LCANViewPro(QMainWindow):
         )
         act_clear_msg.triggered.connect(self.clear_messages)
         t.addAction(act_clear_msg)
+        update_pixmap = getattr(
+            QApplication.style().StandardPixmap,
+            "SP_BrowserReload",
+            QApplication.style().StandardPixmap.SP_BrowserStop,
+        )
+        act_check_update = QAction(
+            self.style().standardIcon(update_pixmap),
+            "Check Update",
+            self,
+        )
+        act_check_update.triggered.connect(lambda: check_update(self))
+        t.addAction(act_check_update)
 
         # 2. 标签栏 (ViewSelectorBar)
         v = QFrame()
