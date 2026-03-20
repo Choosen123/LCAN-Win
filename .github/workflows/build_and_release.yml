@@ -30,7 +30,6 @@ jobs:
             --enable-plugin=pyqt6 ^
             --windows-console-mode=disable ^
             --output-filename="LCAN-View_${{ github.ref_name }}.exe" ^
-            --include-dll-directory="libs" ^
             --windows-icon-from-ico="LCAN-View.ico" ^
             up2.py
 
