@@ -25,7 +25,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Build EXE with Nuitka
+        shell: pwsh
         run: |
+          $env:PYTHONPATH = ".;libs"
+
           python -m nuitka ^
             --standalone ^
             --onefile ^
