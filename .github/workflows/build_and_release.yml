@@ -38,6 +38,9 @@ jobs:
             --icon="LCAN-View.ico" `
             --add-binary "libs/gs_usb.pyd;." `
             --add-binary "libs/libusb-1.0.dll;." `
+            --add-binary "libs/libgcc_s_seh-1.dll;." `
+            --add-binary "libs/libstdc++-6.dll;." `
+            --add-binary "libs/libwinpthread-1.dll;." `
             --clean `
             up2.py
 

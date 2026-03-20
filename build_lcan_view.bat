@@ -56,6 +56,9 @@ pyinstaller --noconsole ^
     --icon="%ICON_PATH%" ^
     --add-binary "%PYD_PATH%;." ^
     --add-binary "%USB_DLL_PATH%;." ^
+    --add-binary "../libs/libgcc_s_seh-1.dll;." ^
+    --add-binary "../libs/libstdc++-6.dll;." ^
+    --add-binary "../libs/libwinpthread-1.dll;." ^
     --distpath "%DIST_DIR%" ^
     --workpath "%PYI_WORK_DIR%" ^
     --specpath "%SPEC_DIR%" ^
