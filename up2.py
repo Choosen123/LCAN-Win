@@ -1,8 +1,8 @@
+import os
+import re
 import subprocess
 import sys
 import time
-import os
-import re
 
 import requests
 from PyQt6.QtCore import (
@@ -47,7 +47,7 @@ from PyQt6.QtWidgets import (
 
 from libs import gs_usb
 
-CURRENT_VERSION = "1.1.0"
+CURRENT_VERSION = "1.1.1"
 
 
 def parse_version(version_text):
