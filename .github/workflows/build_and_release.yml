@@ -34,7 +34,6 @@ jobs:
             --onefile ^
             --enable-plugin=pyqt6 ^
             --windows-console-mode=disable ^
-            --output-dir="dist" ^
             --remove-output ^
             --jobs=4 ^
             --assume-yes-for-downloads ^
