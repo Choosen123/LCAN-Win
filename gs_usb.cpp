@@ -54,16 +54,16 @@ double GsUsb::GetTimestamp() {
 }
 
 GsUsb::GsUsb(uint16_t vendor_id, uint16_t product_id) {
-    std::cout << "Initializing USB device..." << std::endl; 
+    std::cout << "Initializing USB device..." << std::endl;
 
     int ret =libusb_init(&ctx);
     if(ret < 0) {
         throw std::runtime_error("Failed to initialize libusb: " + std::string(libusb_error_name(ret)));
     }
-    
+
     // 开启调试日志（可选）
     // libusb_set_option(ctx, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_DEBUG);
-    
+
     std::cout << "Opening USB device with VID: " << std::hex << vendor_id << " PID: " << std::hex << product_id << std::dec << std::endl;
     // 打开指定设备
     dev_handle = libusb_open_device_with_vid_pid(ctx, vendor_id, product_id);
@@ -71,8 +71,6 @@ GsUsb::GsUsb(uint16_t vendor_id, uint16_t product_id) {
         libusb_exit(ctx);
         throw std::runtime_error("Could not open USB device");
     }
-
-    libusb_reset_device(dev_handle);
 
     libusb_set_auto_detach_kernel_driver(dev_handle, 1);
     //声明接口
@@ -90,9 +88,8 @@ GsUsb::~GsUsb() {
     std::cout << "Cleaning up USB device..." << std::endl;
 
     Stop();
-    
+
     if(dev_handle) {
-        libusb_reset_device(dev_handle); 
         libusb_release_interface(dev_handle, 0);
         libusb_close(dev_handle);
 
@@ -112,7 +109,7 @@ int GsUsb::SendControl(uint8_t request, const uint8_t* data, uint16_t value, uin
         interface_number,
         const_cast<uint8_t*>(data),
         length,
-        2000 
+        2000
     );
 
     if(ret < 0) {
@@ -185,7 +182,7 @@ void GsUsb::Stop(){
         SendControl(GS_USB_BREQ_MODE, reinterpret_cast<uint8_t*>(mode_data), 0, sizeof(mode_data));
     }catch(...){
     }
-    
+
 }
 
 void GsUsb::ReceiveLoop(){
@@ -202,8 +199,8 @@ void GsUsb::ReceiveLoop(){
             int ret =libusb_bulk_transfer(
                         dev_handle,
                         0x81,
-                        buffer, 
-                        sizeof(buffer), 
+                        buffer,
+                        sizeof(buffer),
                         &transferred,
                         100);
 
@@ -235,7 +232,7 @@ void GsUsb::ReceiveLoop(){
             uint8_t dlc, chan, flags, reserved;
 
             if(sizeof(buffer) >=12){
-                echo_id = *reinterpret_cast<uint32_t*>(buffer); 
+                echo_id = *reinterpret_cast<uint32_t*>(buffer);
                 can_id = *reinterpret_cast<uint32_t*>(buffer + 4);
                 dlc = buffer[8];
                 chan = buffer[9];
@@ -245,7 +242,7 @@ void GsUsb::ReceiveLoop(){
                 if(echo_id == 0xFFFFFFFF){
                     if(can_id & CAN_ERR_FLAG){
                         std::cerr << "Error frame received with CAN ID: " << std::hex << can_id << std::dec << std::endl;
-                    
+
                         // 错误帧
                         CANFrame error_frame;
                         error_frame.can_id = can_id & 0x1FFFFFFF;
@@ -273,7 +270,7 @@ void GsUsb::ReceiveLoop(){
                         frame.flags = flags;
                         frame.timestamp = GetTimestamp();
                         frame.data.assign(buffer + 12, buffer + 12 + DlcCodeToLen(dlc));
-                    
+
                         {
                             std::lock_guard<std::mutex> lock(rx_queue_mutex);
                             if(rx_queue.size() < MAX_QUEUE_SIZE) { // 限制队列大小，防止内存占用过高
@@ -336,7 +333,7 @@ bool GsUsb::SendFrame(uint32_t can_id, const std::vector<uint8_t>& data, bool us
             return false;
         }
         dlc_code = GsUsb::LenToDlcCode(len);
-        flags = 0; 
+        flags = 0;
         packet_size = 20; // 12字节头 + 8字节数据
     }
 
@@ -344,7 +341,7 @@ bool GsUsb::SendFrame(uint32_t can_id, const std::vector<uint8_t>& data, bool us
         can_id |= 0x80000000; // 设置扩展帧标志
     }
 
-    std::vector<uint8_t> packet(packet_size, 0); 
+    std::vector<uint8_t> packet(packet_size, 0);
     uint32_t echo_id = 0x00000001; // 发送帧
 
     std::memcpy(packet.data(), &echo_id, 4);
@@ -357,11 +354,11 @@ bool GsUsb::SendFrame(uint32_t can_id, const std::vector<uint8_t>& data, bool us
 
     int transferred;
     int ret = libusb_bulk_transfer(
-        dev_handle, 
-        0x02, 
+        dev_handle,
+        0x02,
         packet.data(),
-        packet.size(), 
-        &transferred, 
+        packet.size(),
+        &transferred,
         1000);
 
     if(ret == 0 && transferred == packet_size){
@@ -413,7 +410,7 @@ std::vector<USBDeviceInfo> GsUsb::ScanDevices(){
         libusb_exit(scan_ctx);
         return devices;
     }
-    
+
     for (i = 0; i < cnt; i++) {
         libusb_device *device = devs[i];
         libusb_device_descriptor desc;
@@ -534,25 +531,25 @@ void GsUsb::SetupCustomBitTiming(const BitTimingConfig& nominal, const BitTiming
 
     uint32_t byte_order = 0x0000BEEF;
     SendControl(
-        GS_USB_BREQ_HOST_FORMAT, 
-        reinterpret_cast<uint8_t*>(&byte_order), 
-        0, 
+        GS_USB_BREQ_HOST_FORMAT,
+        reinterpret_cast<uint8_t*>(&byte_order),
+        0,
         sizeof(byte_order)
-    );   
+    );
 
     uint32_t nominal_bt[5] = {nominal.prop_seg, nominal.phase_seg1, nominal.phase_seg2, nominal.sjw, nominal.brp};
     SendControl(
-        GS_USB_BREQ_BITTIMING, 
-        reinterpret_cast<uint8_t*>(nominal_bt), 
-        0, 
+        GS_USB_BREQ_BITTIMING,
+        reinterpret_cast<uint8_t*>(nominal_bt),
+        0,
         sizeof(nominal_bt)
     );
 
     uint32_t data_bt[5] = {data.prop_seg, data.phase_seg1, data.phase_seg2, data.sjw, data.brp};
     SendControl(
-        GS_USB_BREQ_DATA_BITTIMING, 
-        reinterpret_cast<uint8_t*>(data_bt), 
-        0, 
+        GS_USB_BREQ_DATA_BITTIMING,
+        reinterpret_cast<uint8_t*>(data_bt),
+        0,
         sizeof(data_bt)
     );
 
@@ -564,12 +561,12 @@ int GsUsb::GetBusLoad(){
 
     int ret = libusb_control_transfer(
         dev_handle,
-        0xC1, 
-        GS_USB_BREQ_GET_BUS_LOAD, 
-        0, 
-        interface_number, 
-        reinterpret_cast<uint8_t*>(&bus_load_raw), 
-        sizeof(bus_load_raw), 
+        0xC1,
+        GS_USB_BREQ_GET_BUS_LOAD,
+        0,
+        interface_number,
+        reinterpret_cast<uint8_t*>(&bus_load_raw),
+        sizeof(bus_load_raw),
         500
     );
 
@@ -585,12 +582,12 @@ DeviceStatus GsUsb::GetDeviceStatus(){
     DeviceStatus device_status;
 
     int ret = libusb_control_transfer(
-        dev_handle, 
-        0xC1, 
-        GS_USB_BREQ_GET_STATE, 
-        0, 
-        interface_number, 
-        reinterpret_cast<uint8_t*>(&device_status), 
+        dev_handle,
+        0xC1,
+        GS_USB_BREQ_GET_STATE,
+        0,
+        interface_number,
+        reinterpret_cast<uint8_t*>(&device_status),
         sizeof(DeviceStatus),
         100
     );
