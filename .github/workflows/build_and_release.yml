@@ -29,17 +29,17 @@ jobs:
         run: |
           $env:PYTHONPATH = ".;libs"
 
-          python -m nuitka ^
-            --standalone ^
-            --onefile ^
-            --enable-plugin=pyqt6 ^
-            --windows-console-mode=disable ^
-            --remove-output ^
-            --jobs=4 ^
-            --assume-yes-for-downloads ^
-            --output-filename="LCAN-View_${{ github.ref_name }}.exe" ^
-            --windows-icon-from-ico="LCAN-View.ico" ^
-            --follow-imports ^
+          python -m nuitka `
+            --standalone `
+            --onefile `
+            --enable-plugin=pyqt6 `
+            --windows-console-mode=disable `
+            --remove-output `
+            --jobs=4 `
+            --assume-yes-for-downloads `
+            --output-filename="LCAN-View_${{ github.ref_name }}.exe" `
+            --windows-icon-from-ico="LCAN-View.ico" `
+            --follow-imports `
             up2.py
 
       - name: Create Release in Public Repo
