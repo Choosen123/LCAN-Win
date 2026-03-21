@@ -49,7 +49,7 @@ from PyQt6.QtWidgets import (
 
 from libs import gs_usb
 
-CURRENT_VERSION = "1.1.1"
+CURRENT_VERSION = "1.1.4"
 
 
 def parse_version(version_text):
