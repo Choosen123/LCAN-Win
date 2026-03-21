@@ -5,6 +5,113 @@ import sys
 import time
 import traceback
 
+
+# --- 1. 代理执行逻辑：负责替换文件 ---
+def run_updater_worker():
+    # 命令行参数: [0]脚本 [1]--updater-mode [2]旧PID [3]目标EXE路径 [4]新EXE路径
+    if len(sys.argv) < 5 or sys.argv[1] != "--updater-mode":
+        return
+
+    try:
+        old_pid = int(sys.argv[2])
+        target_exe = sys.argv[3]
+        source_new_exe = sys.argv[4]
+
+        # A. 等待主进程彻底消失 (防止文件锁)
+        for _ in range(30):  # 最多等15秒
+            try:
+                os.kill(old_pid, 0)  # 检查PID是否还在
+                time.sleep(0.5)
+            except OSError:
+                break
+
+        # B. 净化环境变量：防止新进程继承旧的临时目录
+        # 这一步必须在启动新程序前完成
+        clean_env = os.environ.copy()
+        for key in ["_MEIPASS", "PYI_EXPLORE_ROOT", "PYI_CHILD_PACKAGE"]:
+            clean_env.pop(key, None)
+
+        # C. 替换文件
+        if os.path.exists(source_new_exe):
+            # 先删除旧的（或者重命名）
+            bak_path = target_exe + ".bak"
+            if os.path.exists(bak_path):
+                try:
+                    os.remove(bak_path)
+                except:
+                    pass
+
+            if os.path.exists(target_exe):
+                os.rename(target_exe, bak_path)  # 重命名旧版
+
+            os.rename(source_new_exe, target_exe)  # 移动新版到位
+
+        # D. 启动新版本
+        # 使用 clean_env 确保新版本重新解压 DLL
+        subprocess.Popen(
+            [target_exe], env=clean_env, creationflags=subprocess.DETACHED_PROCESS
+        )
+
+    except Exception as e:
+        # 如果失败，记录日志或弹窗
+        pass
+    finally:
+        os._exit(0)  # 代理进程任务完成，退出
+
+
+def cleanup_temp_files():
+    import os
+    import subprocess
+    import sys
+
+    # 1. 确定当前 EXE 的路径
+    current_exe = os.path.abspath(sys.executable)
+    exe_dir = os.path.dirname(current_exe)
+
+    # 2. 定义要清理的文件名
+    worker_exe = current_exe + ".worker.exe"
+    bak_file = current_exe + ".bak"
+
+    # 如果两个文件都不存在，直接返回
+    if not os.path.exists(worker_exe) and not os.path.exists(bak_file):
+        print(
+            f"当前目录: {exe_dir}, current_exe: {current_exe}, worker_exe: {worker_exe}, bak_file: {bak_file}"
+        )
+        print("没有需要清理的临时文件。")
+        return
+
+    # 3. 编写一个“死循环”清理命令 (PowerShell)
+    # 逻辑：循环 20 次，每次等 2 秒，尝试删除。删掉了或者超时了就退出。
+    ps_cmd = f"""
+    $worker = '{worker_exe}'
+    $bak = '{bak_file}'
+    for ($i=0; $i -lt 20; $i++) {{
+        Start-Sleep -Seconds 2
+        if (Test-Path $worker) {{ Remove-Item $worker -Force -ErrorAction SilentlyContinue }}
+        if (Test-Path $bak) {{ Remove-Item $bak -Force -ErrorAction SilentlyContinue }}
+        if (!(Test-Path $worker) -and !(Test-Path $bak)) {{ break }}
+    }}
+    """
+
+    # 4. 启动后台静默进程执行清理
+    try:
+        # 使用 CREATE_NO_WINDOW 确保用户完全看不见黑窗口
+        subprocess.Popen(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                ps_cmd,
+            ],
+            cwd=exe_dir,
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+        )
+    except Exception as e:
+        print(f"后台清理任务启动失败: {e}")
+
+
 import requests
 from PyQt6.QtCore import (
     QAbstractTableModel,
@@ -49,7 +156,7 @@ from PyQt6.QtWidgets import (
 
 from libs import gs_usb
 
-CURRENT_VERSION = "1.1.4"
+CURRENT_VERSION = "1.1.5"
 
 
 def parse_version(version_text):
@@ -329,88 +436,50 @@ def download_and_install(parent_window, download_url, remote_version):
 
 def start_upgrade_script(new_exe_path):
     import os
+    import shutil
     import subprocess
     import sys
 
-    # 获取当前运行的 EXE 路径并处理路径（确保引号安全）
-    current_exe = os.path.abspath(sys.executable)
-    # 获取目录
-    exe_dir = os.path.dirname(current_exe)
-    backup_exe = current_exe + ".bak"
-    updater_bat = os.path.join(exe_dir, "updater.bat")
-
-    # 编写批处理内容
-    # 增加 chcp 65001 以支持 UTF-8（或者干脆把中文删掉改英文）
-    # 给所有路径变量加上双引号
-    bat_content = f"""@echo off
-chcp 65001 > nul
-echo 正在等待程序退出并覆盖新版本...
-
-set "TARGET={current_exe}"
-set "NEWFILE={new_exe_path}"
-set "BACKUP={backup_exe}"
-set /a RETRY=0
-
-:wait_unlock
-set /a RETRY+=1
-if %RETRY% GTR 20 goto fail
-
-:: 尝试删除旧备份
-if exist "%BACKUP%" del /f /q "%BACKUP%" >nul 2>&1
-
-:: 尝试将当前正在运行的 EXE 重命名为备份（这是 Windows 替换正在运行文件的技巧）
-if exist "%TARGET%" (
-    move /y "%TARGET%" "%BACKUP%" >nul 2>&1
-    if errorlevel 1 (
-        timeout /t 1 /nobreak >nul
-        goto wait_unlock
-    )
-)
-
-:: 移动新下载的文件到目标位置
-move /y "%NEWFILE%" "%TARGET%" >nul 2>&1
-if errorlevel 1 goto rollback
-
-:: 启动更新后的程序
-start "" "%TARGET%"
-
-:: 清理并退出
-echo 更新成功！
-if exist "%BACKUP%" del /f /q "%BACKUP%" >nul 2>&1
-(goto) 2>nul & del "%~f0"
-exit /b 0
-
-:rollback
-if exist "%BACKUP%" move /y "%BACKUP%" "%TARGET%" >nul 2>&1
-echo 更新失败，已回滚。
-pause
-exit /b 1
-
-:fail
-echo 更新超时：请确保程序已完全关闭。
-pause
-exit /b 1
-"""
-
-    # 1. 使用 utf-8 写入（配合脚本开头的 chcp 65001）
-    with open(updater_bat, "w", encoding="utf-8") as f:
-        f.write(bat_content)
-
-    # 2. 关键点：使用特殊的启动参数，确保 .bat 完全脱离主程序运行
-    # CREATE_NO_WINDOW = 0x08000000 (不显示黑窗口)
-    # 如果你想调试，可以去掉 creationflags 参数
     try:
-        if sys.platform == "win32":
-            # 使用 cmd /c 启动
-            subprocess.Popen(
-                f'cmd.exe /c "{updater_bat}"',
-                shell=True,
-                cwd=exe_dir,
-                creationflags=subprocess.CREATE_NEW_CONSOLE,  # 调试用：弹出一个新黑窗口看进度
-            )
-        sys.exit(0)
+        # 1. 准备路径
+        current_exe = os.path.abspath(sys.executable)
+        exe_dir = os.path.dirname(current_exe)
+        # 创建一个分身，名字叫 xxx.worker.exe
+        worker_exe = current_exe + ".worker.exe"
+
+        # 2. 物理拷贝一个自己作为代理
+        if os.path.exists(worker_exe):
+            try:
+                os.remove(worker_exe)
+            except:
+                pass
+        shutil.copy2(current_exe, worker_exe)
+
+        # 3. 构造参数启动代理
+        # 我们告诉代理：我们的PID是多少，目标是谁，新文件在哪
+        args = [
+            worker_exe,
+            "--updater-mode",
+            str(os.getpid()),
+            current_exe,
+            os.path.abspath(new_exe_path),
+        ]
+
+        # 4. 启动代理进程
+        # CREATE_NO_WINDOW 隐藏窗口，DETACHED_PROCESS 脱离父进程
+        subprocess.Popen(
+            args,
+            cwd=exe_dir,
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+        )
+
+        # 5. 【极其重要】立即强制退出主程序，释放所有 DLL 和文件锁
+        import os
+
+        os._exit(0)
+
     except Exception as e:
-        print(f"无法启动更新脚本: {e}")
+        print(f"启动更新代理失败: {e}")
 
 
 class TraceModel(QAbstractTableModel):
@@ -1489,10 +1558,16 @@ def set_light_theme(app):
 
 
 if __name__ == "__main__":
+    if "--updater-mode" in sys.argv:
+        run_updater_worker()
+        sys.exit(0)
+
     a = QApplication(sys.argv)
     set_light_theme(a)  # 应用浅色主题
 
     # a.setStyle("Fusion")
     w = LCANViewPro()
     w.show()
+
+    cleanup_temp_files()
     sys.exit(a.exec())
