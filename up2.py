@@ -8,14 +8,21 @@ import traceback
 
 # --- 1. 代理执行逻辑：负责替换文件 ---
 def run_updater_worker():
+    from datetime import datetime
+
     # 命令行参数: [0]脚本 [1]--updater-mode [2]旧PID [3]目标EXE路径 [4]新EXE路径
     if len(sys.argv) < 5 or sys.argv[1] != "--updater-mode":
         return
+
+    base_dir = os.path.dirname(os.path.abspath(sys.executable))
+    log_path = os.path.join(base_dir, "updater_worker_critical.log")
 
     try:
         old_pid = int(sys.argv[2])
         target_exe = sys.argv[3]
         source_new_exe = sys.argv[4]
+        exe_dir = os.path.dirname(target_exe)
+        log_path = os.path.join(exe_dir, "updater_error.log")
 
         # A. 等待主进程彻底消失 (防止文件锁)
         for _ in range(30):  # 最多等15秒
@@ -55,6 +62,16 @@ def run_updater_worker():
     except Exception as e:
         # 如果失败，记录日志或弹窗
         print("更新失败：", repr(e))
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n{'=' * 50}\n")
+                f.write(f"更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"错误简述: {repr(e)}\n")
+                f.write("详细堆栈信息:\n")
+                f.write(traceback.format_exc())  # 记录完整的错误位置和调用链
+                f.write(f"{'=' * 50}\n")
+        except:
+            pass  # 防止写日志本身也报错导致程序卡死
         pass
     finally:
         os._exit(0)  # 代理进程任务完成，退出
@@ -176,7 +193,7 @@ from PyQt6.QtWidgets import (
 
 from libs import gs_usb
 
-CURRENT_VERSION = "1.1.8"
+CURRENT_VERSION = "1.1.9"
 
 
 def parse_version(version_text):
