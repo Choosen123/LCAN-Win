@@ -15,10 +15,10 @@ jobs:
       - name: Checkout Private Code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.13
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.12"
           cache: "pip"
 
       - name: Install Dependencies
@@ -33,14 +33,10 @@ jobs:
       - name: Build C++ Extension (.pyd)
         shell: pwsh
         run: |
-          $PYBIND11_DIR = python -c "import pybind11; print(pybind11.get_cmake_dir())"
-          echo "pybind11_DIR is $PYBIND11_DIR"
-
           mkdir build
           cd build
           cmake .. -G "Visual Studio 17 2022" -A x64 `
             -DPython_EXECUTABLE="$((Get-Command python).Source)" `
-            -Dpybind11_DIR="$PYBIND11_DIR"
           cmake --build . --config Release
 
           cd ..

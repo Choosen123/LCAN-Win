@@ -16,7 +16,7 @@ set "FINAL_OUTPUT_EXE=%PKG_ROOT%\%EXE_NAME%.exe"
 
 :: 依赖项路径 (请确保这些文件路径正确)
 set "PYD_PATH=../libs/gs_usb.pyd"
-set "USB_DLL_PATH=../libs/libusb-1.0.dll"
+set "USB_DLL_PATH=../libusb/VS2022/MS64/dll/libusb-1.0.dll"
 set "ICON_PATH=../LCAN-View.ico"
 :: ==========================================
 
@@ -55,10 +55,6 @@ pyinstaller --noconsole ^
     --name "%EXE_NAME%" ^
     --icon="%ICON_PATH%" ^
     --add-binary "%PYD_PATH%;." ^
-    --add-binary "%USB_DLL_PATH%;." ^
-    --add-binary "../libs/libgcc_s_seh-1.dll;." ^
-    --add-binary "../libs/libstdc++-6.dll;." ^
-    --add-binary "../libs/libwinpthread-1.dll;." ^
     --distpath "%DIST_DIR%" ^
     --workpath "%PYI_WORK_DIR%" ^
     --specpath "%SPEC_DIR%" ^
