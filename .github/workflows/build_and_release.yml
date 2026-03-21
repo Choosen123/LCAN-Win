@@ -49,7 +49,7 @@ jobs:
           $EXE_NAME = "LCAN-View_${{ github.ref_name }}"
 
           # 执行 PyInstaller
-          pyinstaller --onefile `
+          pyinstaller --noconsole --onefile `
             --name "$EXE_NAME" `
             --icon="LCAN-View.ico" `
             --add-binary "libs/gs_usb.pyd;." `

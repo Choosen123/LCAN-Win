@@ -50,7 +50,8 @@ echo.
 
 :: 执行构建
 :: 注意: --onefile 模式会将所有内容打包进一个 exe
-pyinstaller --onefile ^
+pyinstaller --noconsole ^
+    --onefile ^
     --name "%EXE_NAME%" ^
     --icon="%ICON_PATH%" ^
     --add-binary "%PYD_PATH%;." ^

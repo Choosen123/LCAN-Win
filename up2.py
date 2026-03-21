@@ -24,13 +24,30 @@ def run_updater_worker():
         exe_dir = os.path.dirname(target_exe)
         log_path = os.path.join(exe_dir, "updater_error.log")
 
-        # A. 等待主进程彻底消失 (防止文件锁)
-        for _ in range(30):  # 最多等15秒
+        def is_process_running(pid):
             try:
-                os.kill(old_pid, 0)  # 检查PID是否还在
-                time.sleep(0.5)
-            except OSError:
+                # 使用 tasklist 过滤 PID，如果返回内容包含该 PID，说明还在运行
+                output = subprocess.check_output(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                ).decode("gbk", errors="ignore")
+                return str(pid) in output
+            except:
+                return False
+
+        for _ in range(40):
+            if not is_process_running(old_pid):
                 break
+            time.sleep(0.5)
+
+        time.sleep(1)  # 缓冲时间
+        # A. 等待主进程彻底消失 (防止文件锁)
+        # for _ in range(30):  # 最多等15秒
+        #     try:
+        #         os.kill(old_pid, 0)  # 检查PID是否还在
+        #         time.sleep(0.5)
+        #     except OSError:
+        #         break
 
         # B. 净化环境变量：防止新进程继承旧的临时目录
         # 这一步必须在启动新程序前完成
@@ -193,7 +210,7 @@ from PyQt6.QtWidgets import (
 
 from libs import gs_usb
 
-CURRENT_VERSION = "1.1.9"
+CURRENT_VERSION = "1.1.10"
 
 
 def parse_version(version_text):
