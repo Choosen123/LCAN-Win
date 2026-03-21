@@ -65,75 +65,71 @@ def cleanup_temp_files():
     import subprocess
     import sys
 
-    # 1. 确定当前 EXE 的路径
+    # 1. 获取绝对路径
     current_exe = os.path.abspath(sys.executable)
     exe_dir = os.path.dirname(current_exe)
-
-    # 2. 定义要清理的文件名
     worker_exe = current_exe + ".worker.exe"
     bak_file = current_exe + ".bak"
 
     # 如果两个文件都不存在，直接返回
     if not os.path.exists(worker_exe) and not os.path.exists(bak_file):
-        print(
-            f"当前目录: {exe_dir}, current_exe: {current_exe}, worker_exe: {worker_exe}, bak_file: {bak_file}"
-        )
-        print("没有需要清理的临时文件。")
         return
 
-    # 3. 编写一个“死循环”清理命令 (PowerShell)
-    # 逻辑：循环 20 次，每次等 2 秒，尝试删除。删掉了或者超时了就退出。
-    ps_cmd = f"""
-        $worker = '{worker_exe}'
-        $bak = '{bak_file}'
-        $log = Join-Path '{exe_dir}' "cleanup_log.txt"
+    # 2. 定义临时 bat 脚本的路径
+    bat_path = os.path.join(exe_dir, "_silent_cleanup.bat")
 
-        "Cleanup started at $(Get-Date)" | Out-File $log
+    # 3. 编写脚本内容 (这就是你刚才手动测试成功的逻辑)
+    # %~f0 是批处理脚本自删除的关键
+    bat_content = f"""@echo off
+chcp 65001 >nul
+setlocal enabledelayedexpansion
 
-        for ($i=0; $i -lt 40; $i++) {{
-            Start-Sleep -Seconds 1
+:: 等待主程序彻底启动并释放之前的句柄
+timeout /t 3 /nobreak >nul
 
-            if (Test-Path -LiteralPath $worker) {{
-                try {{
-                    Remove-Item -LiteralPath $worker -Force -ErrorAction Stop
-                    "Successfully deleted worker" | Out-File $log -Append
-                }} catch {{
-                    "Error deleting worker: $($_.Exception.Message)" | Out-File $log -Append
-                }}
-            }}
+for /L %%i in (1,1,20) do (
+    set "DELETED_ALL=1"
 
-            if (Test-Path -LiteralPath $bak) {{
-                try {{
-                    Remove-Item -LiteralPath $bak -Force -ErrorAction Stop
-                    "Successfully deleted bak" | Out-File $log -Append
-                }} catch {{
-                    "Error deleting bak: $($_.Exception.Message)" | Out-File $log -Append
-                }}
-            }}
+    if exist "{worker_exe}" (
+        del /f /q "{worker_exe}" >nul 2>nul
+        if exist "{worker_exe}" set "DELETED_ALL=0"
+    )
 
-            if (!(Test-Path -LiteralPath $worker) -and !(Test-Path -LiteralPath $bak)) {{
-                "All clean!" | Out-File $log -Append
-                break
-            }}
-        }}
-        """
-    # 4. 启动后台静默进程执行清理
+    if exist "{bak_file}" (
+        del /f /q "{bak_file}" >nul 2>nul
+        if exist "{bak_file}" set "DELETED_ALL=0"
+    )
+
+    if "!DELETED_ALL!"=="1" goto :success
+    timeout /t 2 /nobreak >nul
+)
+
+:success
+:: 脚本自删除逻辑
+del "%~f0" >nul 2>nul
+exit
+"""
+
     try:
-        # 使用 CREATE_NO_WINDOW 确保用户完全看不见黑窗口
+        # 将脚本写入磁盘，使用 utf-8 编码配合 chcp 65001
+        with open(bat_path, "w", encoding="utf-8") as f:
+            f.write(bat_content)
+
+        # 4. 启动后台静默进程执行该 bat
+        # 即使主程序关了，这个进程也会独立存在
         subprocess.Popen(
-            [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                ps_cmd,
-            ],
+            [bat_path],
             cwd=exe_dir,
-            creationflags=subprocess.DETACHED_PROCESS,
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            shell=False,  # 重点：直接运行文件
         )
     except Exception as e:
-        print(f"后台清理任务启动失败: {e}")
+        # 如果启动失败，尝试记录日志
+        with open(os.path.join(exe_dir, "cleanup_error.log"), "a") as log:
+            log.write(f"Error: {str(e)}\n")
 
 
 import requests
@@ -180,7 +176,7 @@ from PyQt6.QtWidgets import (
 
 from libs import gs_usb
 
-CURRENT_VERSION = "1.1.7"
+CURRENT_VERSION = "1.1.8"
 
 
 def parse_version(version_text):
@@ -1586,6 +1582,8 @@ if __name__ == "__main__":
         run_updater_worker()
         sys.exit(0)
 
+    cleanup_temp_files()
+
     a = QApplication(sys.argv)
     set_light_theme(a)  # 应用浅色主题
 
@@ -1593,5 +1591,4 @@ if __name__ == "__main__":
     w = LCANViewPro()
     w.show()
 
-    cleanup_temp_files()
     sys.exit(a.exec())
