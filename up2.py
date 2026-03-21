@@ -54,6 +54,7 @@ def run_updater_worker():
 
     except Exception as e:
         # 如果失败，记录日志或弹窗
+        print("更新失败：", repr(e))
         pass
     finally:
         os._exit(0)  # 代理进程任务完成，退出
@@ -83,16 +84,39 @@ def cleanup_temp_files():
     # 3. 编写一个“死循环”清理命令 (PowerShell)
     # 逻辑：循环 20 次，每次等 2 秒，尝试删除。删掉了或者超时了就退出。
     ps_cmd = f"""
-    $worker = '{worker_exe}'
-    $bak = '{bak_file}'
-    for ($i=0; $i -lt 20; $i++) {{
-        Start-Sleep -Seconds 2
-        if (Test-Path $worker) {{ Remove-Item $worker -Force -ErrorAction SilentlyContinue }}
-        if (Test-Path $bak) {{ Remove-Item $bak -Force -ErrorAction SilentlyContinue }}
-        if (!(Test-Path $worker) -and !(Test-Path $bak)) {{ break }}
-    }}
-    """
+        $worker = '{worker_exe}'
+        $bak = '{bak_file}'
+        $log = Join-Path '{exe_dir}' "cleanup_log.txt"
 
+        "Cleanup started at $(Get-Date)" | Out-File $log
+
+        for ($i=0; $i -lt 40; $i++) {{
+            Start-Sleep -Seconds 1
+
+            if (Test-Path -LiteralPath $worker) {{
+                try {{
+                    Remove-Item -LiteralPath $worker -Force -ErrorAction Stop
+                    "Successfully deleted worker" | Out-File $log -Append
+                }} catch {{
+                    "Error deleting worker: $($_.Exception.Message)" | Out-File $log -Append
+                }}
+            }}
+
+            if (Test-Path -LiteralPath $bak) {{
+                try {{
+                    Remove-Item -LiteralPath $bak -Force -ErrorAction Stop
+                    "Successfully deleted bak" | Out-File $log -Append
+                }} catch {{
+                    "Error deleting bak: $($_.Exception.Message)" | Out-File $log -Append
+                }}
+            }}
+
+            if (!(Test-Path -LiteralPath $worker) -and !(Test-Path -LiteralPath $bak)) {{
+                "All clean!" | Out-File $log -Append
+                break
+            }}
+        }}
+        """
     # 4. 启动后台静默进程执行清理
     try:
         # 使用 CREATE_NO_WINDOW 确保用户完全看不见黑窗口
@@ -106,7 +130,7 @@ def cleanup_temp_files():
                 ps_cmd,
             ],
             cwd=exe_dir,
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+            creationflags=subprocess.DETACHED_PROCESS,
         )
     except Exception as e:
         print(f"后台清理任务启动失败: {e}")
@@ -156,7 +180,7 @@ from PyQt6.QtWidgets import (
 
 from libs import gs_usb
 
-CURRENT_VERSION = "1.1.6"
+CURRENT_VERSION = "1.1.7"
 
 
 def parse_version(version_text):
