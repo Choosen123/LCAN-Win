@@ -1,4 +1,5 @@
 import os
+import random
 import re
 import subprocess
 import sys
@@ -210,7 +211,7 @@ from PyQt6.QtWidgets import (
 
 from libs import gs_usb
 
-CURRENT_VERSION = "1.1.10"
+CURRENT_VERSION = "1.2.0"
 
 
 def parse_version(version_text):
@@ -1411,14 +1412,14 @@ class LCANViewPro(QMainWindow):
 
     def update_ui(self):
 
-        # if self.device:
-        # 1. 检查底层 C++ 统计的原始接收总数
-        # raw_rx_count = self.device.get_rx_count()
-        # 2. 检查当前 UI 内存映射里的 ID 数量
-        # map_size = len(self.rx_map)
+        if self.device:
+            # 1. 检查底层 C++ 统计的原始接收总数
+            raw_rx_count = self.device.get_rx_count()
+            # 2. 检查当前 UI 内存映射里的 ID 数量
+            map_size = len(self.rx_map)
 
-        # 打印到控制台观察
-        # print(f"Raw RX Count: {raw_rx_count}, UI Map Size: {map_size}")
+            # 打印到控制台观察
+            print(f"Raw RX Count: {raw_rx_count}, UI Map Size: {map_size}")
         # self.status.showMessage(f"Total RX: {raw_rx_count} | IDs: {map_size}")
 
         for cid, m in self.rx_map.items():
@@ -1477,7 +1478,14 @@ class LCANViewPro(QMainWindow):
         self.table_tx.setCellWidget(row, 4, cw)
 
         self.table_tx.setItem(row, 5, QTableWidgetItem("0"))
-        self.table_tx.setItem(row, 6, QTableWidgetItem(""))
+
+        random_widget = QWidget()
+        random_layout = QHBoxLayout(random_widget)
+        random_layout.setContentsMargins(5, 0, 5, 0)
+        random_cb = QCheckBox("Random")
+        random_layout.addWidget(random_cb)
+        random_layout.addStretch()
+        self.table_tx.setCellWidget(row, 6, random_widget)
 
         # 绑定引用供后台处理
         self.tx_list.append(
@@ -1487,6 +1495,7 @@ class LCANViewPro(QMainWindow):
                 "len_cb": len_cb,
                 "cb": cb,
                 "ed": ed,
+                "random_cb": random_cb,
                 "last": 0,
                 "cnt": 0,
             }
@@ -1524,8 +1533,16 @@ class LCANViewPro(QMainWindow):
                         is_brs = "(BRS)" in type_str
 
                         target_len = int(tx["len_cb"].currentText())
-                        raw_hex = self.table_tx.item(r, 3).text().replace(" ", "")
-                        data_bytes = bytearray.fromhex(raw_hex)
+
+                        if tx["random_cb"].isChecked():
+                            data_bytes = bytearray(
+                                random.getrandbits(8) for _ in range(target_len)
+                            )
+                            random_hex = " ".join(f"{b:02X}" for b in data_bytes)
+                            self.table_tx.item(r, 3).setText(random_hex)
+                        else:
+                            raw_hex = self.table_tx.item(r, 3).text().replace(" ", "")
+                            data_bytes = bytearray.fromhex(raw_hex)
 
                         # 补齐或截断数据
                         if len(data_bytes) < target_len:
