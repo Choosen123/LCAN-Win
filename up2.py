@@ -644,7 +644,7 @@ class ConfigDialog(QDialog):
         self.combo_nom = QComboBox()
         self.combo_nom.addItems(["1000 kbps", "250 kbps", "125 kbps", "500 kbps"])
         self.combo_data = QComboBox()
-        self.combo_data.addItems(["2000 kbps", "1000 kbps", "5000 kbps"])
+        self.combo_data.addItems(["2000 kbps", "1000 kbps", "4000 kbps", "5000 kbps"])
         cfg_lay.addWidget(QLabel("CAN 模式:"), 0, 0)
         cfg_lay.addWidget(self.rb_fd, 0, 1)
         cfg_lay.addWidget(QLabel("仲裁段:"), 1, 0)
