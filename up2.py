@@ -1,6 +1,7 @@
 import os
 import random
 import re
+import struct
 import subprocess
 import sys
 import time
@@ -171,6 +172,7 @@ import requests
 from PyQt6.QtCore import (
     QAbstractTableModel,
     QSize,
+    QSortFilterProxyModel,
     Qt,
     QThread,
     QTimer,
@@ -211,7 +213,7 @@ from PyQt6.QtWidgets import (
 
 from libs import gs_usb
 
-CURRENT_VERSION = "1.2.2"
+CURRENT_VERSION = "1.2.3"
 
 
 def parse_version(version_text):
@@ -597,6 +599,43 @@ class TraceModel(QAbstractTableModel):
         self.endResetModel()
 
 
+class TraceFilterProxyModel(QSortFilterProxyModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._id_filter = set()
+
+    def set_id_filter(self, text):
+        ids = set()
+        for token in re.split(r"[,\s]+", text.strip()):
+            if not token:
+                continue
+            if token.lower().startswith("0x"):
+                token = token[2:]
+            try:
+                ids.add(int(token, 16))
+            except ValueError:
+                continue
+        self._id_filter = ids
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        if not self._id_filter:
+            return True
+        model = self.sourceModel()
+        idx = model.index(source_row, 2, source_parent)  # ID 列
+        id_text = model.data(idx, Qt.ItemDataRole.DisplayRole)
+        if not isinstance(id_text, str):
+            return False
+        match = re.match(r"^([0-9A-Fa-f]+)", id_text)
+        if not match:
+            return False
+        try:
+            cid = int(match.group(1), 16)
+        except ValueError:
+            return False
+        return cid in self._id_filter
+
+
 # --- 2. 垂直侧边标签 (保持原有设计) ---
 class VerticalLabel(QWidget):
     def __init__(self, text, bg_color="#2c3e50"):
@@ -701,6 +740,7 @@ class LCANViewPro(QMainWindow):
         self.rx_map = {}
         self.tx_list = []
         self.config = None
+        self.trace_parse_f1f2 = False
         self.init_ui()
         self.apply_style()
         self.ui_timer = QTimer()
@@ -885,7 +925,9 @@ class LCANViewPro(QMainWindow):
         # --- Trace Table ---
         self.table_trace = QTableView()
         self.trace_model = TraceModel()
-        self.table_trace.setModel(self.trace_model)
+        self.trace_proxy = TraceFilterProxyModel(self)
+        self.trace_proxy.setSourceModel(self.trace_model)
+        self.table_trace.setModel(self.trace_proxy)
         self.stack.addWidget(self.table_trace)
 
         # 必须禁用自动列宽，这是卡顿的元凶之一！！
@@ -906,9 +948,19 @@ class LCANViewPro(QMainWindow):
             QAbstractItemView.SelectionBehavior.SelectRows
         )
 
-        # 4. Bus Load (在标签栏右侧)
-        # --- 将 Stretch 放在按钮和 Load 容器之间，使其靠右 ---
+        # 4. Trace 过滤/解析控制 (在标签栏右侧)
         vb_layout.addStretch()
+
+        vb_layout.addWidget(QLabel("Trace Filter:"))
+        self.trace_filter_edit = QLineEdit()
+        self.trace_filter_edit.setPlaceholderText("Hex ID, e.g. F1 F2")
+        self.trace_filter_edit.setFixedWidth(160)
+        self.trace_filter_edit.textChanged.connect(self.on_trace_filter_changed)
+        vb_layout.addWidget(self.trace_filter_edit)
+
+        self.chk_trace_f1f2 = QCheckBox("F1/F2 Float32")
+        self.chk_trace_f1f2.toggled.connect(self.on_trace_parse_toggle)
+        vb_layout.addWidget(self.chk_trace_f1f2)
 
         # --- Error Status 容器 (放在 Bus Load 左边) ---
         self.error_status_widget = QWidget()
@@ -1053,6 +1105,19 @@ class LCANViewPro(QMainWindow):
             b.style().unpolish(b)
             b.style().polish(b)
             b.update()
+
+    def on_trace_filter_changed(self, text):
+        if hasattr(self, "trace_proxy"):
+            self.trace_proxy.set_id_filter(text)
+
+    def on_trace_parse_toggle(self, checked):
+        self.trace_parse_f1f2 = bool(checked)
+
+    def format_trace_data(self, can_id, data_bytes):
+        if self.trace_parse_f1f2 and can_id in (0xF1, 0xF2) and len(data_bytes) == 32:
+            values = struct.unpack("<8f", data_bytes)
+            return " ".join(f"{v:.6f}" for v in values)
+        return " ".join(f"{b:02X}" for b in data_bytes)
 
     def show_config(self):
         dlg = ConfigDialog(self)
@@ -1254,7 +1319,7 @@ class LCANViewPro(QMainWindow):
             current_ts = f["timestamp"]
 
             actual_len = DLC_TO_LEN[f["dlc"]] if f["dlc"] < 16 else len(f["data"])
-            data_s = " ".join(f"{b:02X}" for b in f["data"])
+            data_s_hex = " ".join(f"{b:02X}" for b in f["data"])
 
             # 更新 rx_map (这部分计算很快，可以保留在循环内)
             if cid not in self.rx_map:
@@ -1272,18 +1337,18 @@ class LCANViewPro(QMainWindow):
                     m["cyc"] = (m["cyc"] * 0.7) + (delta_ms * 0.3)
 
             m["pts"] = current_ts
-            m["data"], m["len"], m["is_fd"] = data_s, actual_len, f["is_fd"]
+            m["data"], m["len"], m["is_fd"] = data_s_hex, actual_len, f["is_fd"]
 
             # --- 优化：存入缓冲区，不要在这里 insert_new_trace_row ---
             # if is_trace_visible:
-            data_s = " ".join(f"{b:02X}" for b in f["data"])
+            data_s_trace = self.format_trace_data(cid, f["data"])
             # 存入元组 (timestamp, id, len, data, is_error)
             self.temp_buffer.append(
                 (
                     f["timestamp"],
                     f"{f['can_id']:03X}h",
                     len(f["data"]),
-                    data_s,
+                    data_s_trace,
                     f.get("is_error", False),
                 )
             )
