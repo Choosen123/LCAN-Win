@@ -1,3 +1,46 @@
+from libs import gs_usb
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QProgressDialog,
+    QPushButton,
+    QRadioButton,
+    QSplitter,
+    QStackedWidget,
+    QStatusBar,
+    QTableView,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
+from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPalette
+from PyQt6.QtCore import (
+    QAbstractTableModel,
+    QSize,
+    QSortFilterProxyModel,
+    Qt,
+    QThread,
+    QTimer,
+    QVariant,
+    pyqtSignal,
+)
+import requests
 import os
 import random
 import re
@@ -84,7 +127,8 @@ def run_updater_worker():
         try:
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"\n{'=' * 50}\n")
-                f.write(f"更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"更新时间: {datetime.now().strftime(
+                    '%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"错误简述: {repr(e)}\n")
                 f.write("详细堆栈信息:\n")
                 f.write(traceback.format_exc())  # 记录完整的错误位置和调用链
@@ -167,51 +211,6 @@ exit
         with open(os.path.join(exe_dir, "cleanup_error.log"), "a") as log:
             log.write(f"Error: {str(e)}\n")
 
-
-import requests
-from PyQt6.QtCore import (
-    QAbstractTableModel,
-    QSize,
-    QSortFilterProxyModel,
-    Qt,
-    QThread,
-    QTimer,
-    QVariant,
-    pyqtSignal,
-)
-from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPalette
-from PyQt6.QtWidgets import (
-    QAbstractItemView,
-    QApplication,
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFrame,
-    QGridLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QHeaderView,
-    QLabel,
-    QLineEdit,
-    QMainWindow,
-    QMessageBox,
-    QProgressBar,
-    QProgressDialog,
-    QPushButton,
-    QRadioButton,
-    QSplitter,
-    QStackedWidget,
-    QStatusBar,
-    QTableView,
-    QTableWidget,
-    QTableWidgetItem,
-    QToolBar,
-    QVBoxLayout,
-    QWidget,
-)
-
-from libs import gs_usb
 
 CURRENT_VERSION = "1.2.3"
 
@@ -366,12 +365,14 @@ def check_update(parent_window):
             reply = QMessageBox.question(
                 parent_window,
                 "发现新版本",
-                f"当前版本: {CURRENT_VERSION}\n最新版本: {remote_version}\n\n更新内容:\n{changelog}\n\n是否立即下载更新？",
+                f"当前版本: {CURRENT_VERSION}\n最新版本: {
+                    remote_version}\n\n更新内容:\n{changelog}\n\n是否立即下载更新？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
 
             if reply == QMessageBox.StandardButton.Yes:
-                download_and_install(parent_window, download_url, remote_version)
+                download_and_install(
+                    parent_window, download_url, remote_version)
         else:
             show_update_detail(
                 parent_window,
@@ -588,7 +589,7 @@ class TraceModel(QAbstractTableModel):
         self.beginResetModel()  # 1kHz 下使用重置模型比插入行更快
         self._data.extend(new_items)
         if len(self._data) > self.max_rows:
-            self._data = self._data[-self.max_rows :]
+            self._data = self._data[-self.max_rows:]
         self.endResetModel()
 
     def clear(self):
@@ -663,7 +664,7 @@ class ConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("扫描并配置 CAN 设备")
-        self.setFixedSize(500, 320)
+        self.setFixedSize(800, 520)
         self.selected_dev = None
         layout = QVBoxLayout(self)
         dev_group = QGroupBox(" 可用设备")
@@ -681,9 +682,11 @@ class ConfigDialog(QDialog):
         self.rb_fd = QRadioButton("CAN FD")
         self.rb_fd.setChecked(True)
         self.combo_nom = QComboBox()
-        self.combo_nom.addItems(["1000 kbps", "250 kbps", "125 kbps", "500 kbps"])
+        self.combo_nom.addItems(
+            ["1000 kbps", "250 kbps", "125 kbps", "500 kbps"])
         self.combo_data = QComboBox()
-        self.combo_data.addItems(["2000 kbps", "1000 kbps", "4000 kbps", "5000 kbps"])
+        self.combo_data.addItems(
+            ["2000 kbps", "1000 kbps", "4000 kbps", "5000 kbps"])
         cfg_lay.addWidget(QLabel("CAN 模式:"), 0, 0)
         cfg_lay.addWidget(self.rb_fd, 0, 1)
         cfg_lay.addWidget(QLabel("仲裁段:"), 1, 0)
@@ -711,7 +714,8 @@ class ConfigDialog(QDialog):
             self.table_dev.setItem(r, 0, it)
             self.table_dev.setItem(r, 1, QTableWidgetItem(hex(d.vid)))
             self.table_dev.setItem(r, 5, QTableWidgetItem(d.product))
-            self.table_dev.item(r, 0).setData(Qt.ItemDataRole.UserRole, (d.vid, d.pid))
+            self.table_dev.item(r, 0).setData(
+                Qt.ItemDataRole.UserRole, (d.vid, d.pid))
 
     def on_select(self, it):
         for r in range(self.table_dev.rowCount()):
@@ -943,7 +947,8 @@ class LCANViewPro(QMainWindow):
 
         # 开启性能优化开关
         self.table_trace.verticalHeader().hide()  # 隐藏行号极大提升性能
-        self.table_trace.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table_trace.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table_trace.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -955,7 +960,8 @@ class LCANViewPro(QMainWindow):
         self.trace_filter_edit = QLineEdit()
         self.trace_filter_edit.setPlaceholderText("Hex ID, e.g. F1 F2")
         self.trace_filter_edit.setFixedWidth(160)
-        self.trace_filter_edit.textChanged.connect(self.on_trace_filter_changed)
+        self.trace_filter_edit.textChanged.connect(
+            self.on_trace_filter_changed)
         vb_layout.addWidget(self.trace_filter_edit)
 
         self.chk_trace_f1f2 = QCheckBox("F1/F2 Float32")
@@ -1073,6 +1079,7 @@ class LCANViewPro(QMainWindow):
             # 调用 C++ 绑定的 get_bus_load()
             # 假设返回的是 0-1000 的整数
             raw_val = self.device.get_bus_load()
+            print(raw_val)
 
             if raw_val >= 0:
                 actual_percent = raw_val / 10.0  # 转换为 0.0 - 100.0
@@ -1290,7 +1297,8 @@ class LCANViewPro(QMainWindow):
 
                 prot_loc_code = data[3]
                 if prot_loc_code in CanError.PROT_LOC_MAP:
-                    err_details.append(f"@{CanError.PROT_LOC_MAP[prot_loc_code]}")
+                    err_details.append(
+                        f"@{CanError.PROT_LOC_MAP[prot_loc_code]}")
 
                 if len(data) >= 8:
                     self.last_tec, self.last_rec = data[6], data[7]
@@ -1318,7 +1326,8 @@ class LCANViewPro(QMainWindow):
             cid = f["can_id"]
             current_ts = f["timestamp"]
 
-            actual_len = DLC_TO_LEN[f["dlc"]] if f["dlc"] < 16 else len(f["data"])
+            actual_len = DLC_TO_LEN[f["dlc"]
+                                    ] if f["dlc"] < 16 else len(f["data"])
             data_s_hex = " ".join(f"{b:02X}" for b in f["data"])
 
             # 更新 rx_map (这部分计算很快，可以保留在循环内)
@@ -1327,7 +1336,8 @@ class LCANViewPro(QMainWindow):
                 self.table_rx.insertRow(r)
                 for i in range(6):
                     self.table_rx.setItem(r, i, QTableWidgetItem(""))
-                self.rx_map[cid] = {"row": r, "cnt": 0, "pts": current_ts, "cyc": 0}
+                self.rx_map[cid] = {"row": r, "cnt": 0,
+                                    "pts": current_ts, "cyc": 0}
 
             m = self.rx_map[cid]
             m["cnt"] += 1
@@ -1484,7 +1494,7 @@ class LCANViewPro(QMainWindow):
             map_size = len(self.rx_map)
 
             # 打印到控制台观察
-            print(f"Raw RX Count: {raw_rx_count}, UI Map Size: {map_size}")
+            # print(f"Raw RX Count: {raw_rx_count}, UI Map Size: {map_size}")
         # self.status.showMessage(f"Total RX: {raw_rx_count} | IDs: {map_size}")
 
         for cid, m in self.rx_map.items():
@@ -1590,7 +1600,8 @@ class LCANViewPro(QMainWindow):
                         r = tx["row"]
 
                         # 1. 提取所有发送需要的参数
-                        id_str = self.table_tx.item(r, 0).text().replace("h", "")
+                        id_str = self.table_tx.item(
+                            r, 0).text().replace("h", "")
                         cid = int(id_str, 16)
 
                         type_str = tx["type_cb"].currentText()
@@ -1603,15 +1614,18 @@ class LCANViewPro(QMainWindow):
                             data_bytes = bytearray(
                                 random.getrandbits(8) for _ in range(target_len)
                             )
-                            random_hex = " ".join(f"{b:02X}" for b in data_bytes)
+                            random_hex = " ".join(
+                                f"{b:02X}" for b in data_bytes)
                             self.table_tx.item(r, 3).setText(random_hex)
                         else:
-                            raw_hex = self.table_tx.item(r, 3).text().replace(" ", "")
+                            raw_hex = self.table_tx.item(
+                                r, 3).text().replace(" ", "")
                             data_bytes = bytearray.fromhex(raw_hex)
 
                         # 补齐或截断数据
                         if len(data_bytes) < target_len:
-                            data_bytes.extend([0] * (target_len - len(data_bytes)))
+                            data_bytes.extend(
+                                [0] * (target_len - len(data_bytes)))
                         else:
                             data_bytes = data_bytes[:target_len]
 
